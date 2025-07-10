@@ -1,0 +1,124 @@
+---
+title: "data_preparation"
+author: "mb_vasques"
+date: "2025-05-30"
+output: html_document
+---
+
+Load necessary packages
+
+```{r}
+# data manipulation
+library(Seurat)
+library(SeuratData)
+library(Matrix)
+library(dplyr)
+
+# initial filtering
+library(DropletUtils)
+
+# clustering
+library(clustree)
+
+# fast DE
+library(presto)
+
+# gene set enrichment
+library(gprofiler2)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+
+set.seed(1)
+```
+
+
+
+```{r}
+create_obj = function(dir, name){
+  sample_mtx = Read10X(data.dir = paste0(dir, "/filtered_feature_bc_matrix/"))
+  
+  # summarise TCR segments
+  trb = rownames(sample_mtx)[c(grep("^Trbv", rownames(sample_mtx)), 
+                             grep("^Trbd", rownames(sample_mtx)),
+                             grep("^Trbj", rownames(sample_mtx)),
+                             grep("^Trbc", rownames(sample_mtx)))]
+  sample_mtx = rbind(sample_mtx, Matrix::colSums(sample_mtx[trb,]))
+  rownames(sample_mtx)[nrow(sample_mtx)] = "Trb-all"
+  sample_mtx = sample_mtx[!(rownames(sample_mtx) %in% trb),]
+  
+  tra = rownames(sample_mtx)[c(grep("^Trav", rownames(sample_mtx)), 
+                             grep("^Traj", rownames(sample_mtx)),
+                             grep("^Trac", rownames(sample_mtx)))]
+  sample_mtx = rbind(sample_mtx, Matrix::colSums(sample_mtx[tra,]))
+  rownames(sample_mtx)[nrow(sample_mtx)] = "Tra-all"
+  sample_mtx = sample_mtx[!(rownames(sample_mtx) %in% tra),]
+  
+  
+  obj = CreateSeuratObject(counts = sample_mtx, assay = 'RNA')
+  
+  saveRDS(object = obj, file = name)
+  return(obj)
+}
+```
+
+
+```{r}
+create_obj(dir = "/Users/maria/OneDrive/Documentos/iMM/data/day11_mTfr_all", 
+           name = "/Users/maria/OneDrive/Documentos/iMM/data/RDS/hCD2_d11_raw_srat.RDS")
+```
+
+```{r}
+srat = readRDS("/Users/maria/OneDrive/Documentos/iMM/data/RDS/hCD2_d11_raw_srat.RDS")
+dim(srat)
+```
+
+```{r}
+head(t(GetAssayData(srat, slot = "counts")[c("Trb-all","Tra-all"),]), 10)
+```
+
+
+```{r}
+srat$orig.ident = "hCD2_d11_Tfr"
+```
+
+
+```{r}
+srat = PercentageFeatureSet(srat, col.name = "percent.mt", assay = "RNA", pattern = "^mt-") 
+srat = PercentageFeatureSet(srat, col.name = "percent.rb", assay = "RNA", pattern = "^Rp(s|l)") 
+```
+
+```{r}
+srat@meta.data
+```
+
+
+
+```{r}
+# define thresholds
+qcthr = c("maxMT" = 10, "minC" = 2000, "minG" = 600, "maxC" = 30000, "maxG" = 4000)
+
+cells = srat$percent.mt<qcthr["maxMT"] & srat$nCount_RNA>qcthr["minC"] &
+        srat$nCount_RNA<qcthr["maxC"] & srat$nFeature_RNA>qcthr["minG"] &
+        srat$nFeature_RNA<qcthr["maxG"]
+
+# filter the srat object
+srat_filt = subset(srat, cells = colnames(srat)[cells])
+```
+
+
+```{r}
+dim(srat_filt)
+```
+
+
+```{r}
+saveRDS(srat_filt, file = "/Users/maria/OneDrive/Documentos/iMM/data/RDS/hCD2_d11_filt_srat.RDS")
+```
+
+
+
+

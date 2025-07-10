@@ -1,0 +1,708 @@
+---
+title: "integration"
+author: "mb_vasques"
+date: "2025-05-30"
+output: html_document
+---
+
+
+Load necessary packages
+
+```{r}
+# data manipulation
+library(Seurat)
+library(SeuratData)
+library(Matrix)
+library(dplyr)
+
+# integreation
+library(harmony)
+
+# clustering
+library(clustree)
+
+# fast DE
+library(presto)
+
+# gene set enrichment
+library(gprofiler2)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+
+# palette
+library(MetBrewer)
+
+# saving
+library(Matrix)
+
+set.seed(1)
+```
+
+
+```{r}
+create_obj = function(path, orig_ident){
+  srat = readRDS(file = paste0(path, "_srat.RDS"))
+  
+  srat = NormalizeData(srat, normalization.method = "LogNormalize", scale.factor = 10000) %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 5000) %>%
+    ScaleData(vars.to.regress = c("nCount_RNA", "percent.mt"), do.scale = F)
+  
+  return(srat)
+}
+```
+
+
+```{r}
+sample_files = c("D104T11_filt","D104T13_filt","D104T14_filt","D104T15_filt",
+              "D104T16_filt_treg","hCD2_d0_filt","hCD2_d6_filt","hCD2_d11_filt")
+
+dir = "/Users/maria/OneDrive/Documentos/iMM/data/RDS/"
+```
+
+
+```{r}
+srat_lt = lapply(sample_files, function(s) {
+  create_obj(path = paste0(dir, s))
+})
+```
+
+
+```{r}
+sample_names = c("D104T11","D104T13","D104T14","D104T15",
+              "D104T16_Treg","hCD2_d0_Treg","hCD2_d6_Tfr","hCD2_d11_Tfr")
+names(srat_lt) = sample_names
+```
+
+
+
+```{r}
+srat_lt
+```
+
+
+```{r}
+for (i in seq_along(srat_lt)) {
+  print(unique(srat_lt[[i]]$orig.ident))
+}
+```
+
+```{r}
+srat_lt$D104T16_Treg$orig.ident = "D104T16"
+```
+
+
+```{r}
+for (i in seq_along(srat_lt)) {
+  print(unique(srat_lt[[i]]$orig.ident))
+}
+```
+
+
+```{r}
+ids = c("D104T11", "D104T13", "D104T14", "D104T15", "D104T16",
+        "hCD2_d0_Treg", "hCD2_d6_Tfr", "hCD2_d11_Tfr")  # same order as srat_list
+
+# Merge all Seurat objects in the list into one
+merged = merge(
+  x = srat_lt[[1]],
+  y = srat_lt[-1],
+  add.cell.ids = ids,
+  merge.data = T
+)
+```
+
+
+```{r}
+merged
+```
+
+
+```{r}
+merged[["RNA"]] = JoinLayers(merged[["RNA"]])
+```
+
+
+```{r}
+merged
+```
+
+```{r}
+dim(merged)
+```
+
+```{r}
+dim(merged[["RNA"]])
+```
+
+```{r}
+dim(merged@assays$RNA$counts)
+```
+
+```{r}
+DefaultAssay(merged) = "RNA"
+```
+
+
+```{r}
+merged@meta.data
+```
+
+
+```{r}
+unique(merged$orig.ident)
+```
+
+```{r}
+experiment_df = c(
+  "D104T11" = "GFP",
+  "D104T13" = "GFP",
+  "D104T14" = "GFP",
+  "D104T15" = "GFP",
+  "D104T16" = "GFP",
+  "hCD2_d0_Treg" = "hCD2",
+  "hCD2_d6_Tfr" = "hCD2",
+  "hCD2_d11_Tfr" = "hCD2"
+)
+
+day_df = c(
+  "D104T11" = 6,
+  "D104T13" = 11,
+  "D104T14" = 11,
+  "D104T15" = 11,
+  "D104T16" = 0,
+  "hCD2_d0_Treg" = 0,
+  "hCD2_d6_Tfr" = 6,
+  "hCD2_d11_Tfr" = 11
+)
+
+celltype_df = c(
+  "D104T11" = "Treg + Tfh",
+  "D104T13" = "Treg",
+  "D104T14" = "Tfh",
+  "D104T15" = "Tfr",
+  "D104T16" = "Treg",
+  "hCD2_d0_Treg" = "Treg",
+  "hCD2_d6_Tfr" = "Tfr",
+  "hCD2_d11_Tfr" = "Tfr"
+)
+
+merged$experiment = unname(experiment_df[merged$orig.ident])
+merged$day = unname(day_df[merged$orig.ident])
+merged$cell_type = unname(celltype_df[merged$orig.ident])
+```
+
+
+```{r}
+merged@meta.data
+```
+
+
+```{r}
+merged = NormalizeData(merged, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+```{r}
+merged = FindVariableFeatures(merged, selection.method = "vst", nfeatures = 5000)
+```
+
+
+```{r, fig.width=10, fig.height=8}
+# Identify the 20 most highly variable genes
+top20 = head(VariableFeatures(merged), 20)
+
+# plot variable features with and without labels
+plot1 = VariableFeaturePlot(merged)
+plot2 = LabelPoints(plot = plot1, points = top20, repel = TRUE)
+plot2
+```
+
+
+```{r}
+merged = ScaleData(merged, vars.to.regress = c("nCount_RNA", "percent.mt", "percent.rb"), do.scale = F)
+```
+
+
+```{r}
+merged
+```
+
+```{r}
+merged = RunPCA(merged, verbose = T, assay = "RNA", npcs = 50)
+ep = ElbowPlot(merged, ndims = 50)
+print(ep)
+```
+
+
+```{r}
+ncomp = 30
+harmony = RunHarmony(merged, group.by.vars = "experiment", dims.use = 1:ncomp, max_iter = 50)
+```
+
+```{r}
+harmony
+```
+
+
+```{r}
+ncomp = 30
+harmony = RunUMAP(harmony, reduction = "harmony", dims = 1:ncomp, seed.use = 42)
+```
+
+
+```{r}
+UMAPPlot(harmony, group.by="experiment")
+```
+
+```{r fig.width=16, fig.height=10}
+FeaturePlot(harmony, features = c("nCount_RNA", "nFeature_RNA","percent.mt","percent.rb"),
+            order=T, ncol = 2)
+```
+
+```{r}
+head(harmony@meta.data)
+```
+
+
+```{r}
+sampletype_df = c(
+  "D104T11" = "d6_Mix(Treg+Tfh)",
+  "D104T13" = "d11_Treg",
+  "D104T14" = "d11_Tfh",
+  "D104T15" = "d11_Tfr",
+  "D104T16" = "d0_Treg",
+  "hCD2_d0_Treg" = "d0_Treg",
+  "hCD2_d6_Tfr" = "d6_Tfr",
+  "hCD2_d11_Tfr" = "d11_Tfr"
+)
+
+harmony$sample_type = unname(sampletype_df[harmony$orig.ident])
+```
+
+
+```{r}
+# srat_filt = D104T11_final_srat.RDS (final annotation)
+
+# Assign the cell type annotation to D104T11 cells
+harmony@meta.data[paste0("D104T11_",rownames(srat_filt@meta.data)), "cell_type"] = srat_filt$cell_type
+harmony@meta.data[paste0("D104T11_",rownames(srat_filt@meta.data)), "D104T11_annotation"] = srat_filt$final_annot
+```
+
+
+```{r}
+head(harmony@meta.data)
+```
+
+
+```{r}
+UMAPPlot(harmony, group.by="cell_type")
+```
+
+
+```{r fig.width=20, fig.height=6}
+UMAPPlot(harmony, group.by="day", split.by = "cell_type", pt.size = 0.8)
+```
+
+
+```{r}
+# separate between cell cycles/phases, using list of known genes associated w each phase
+harmony = CellCycleScoring(harmony, 
+                             s.features = cc.genes$s.genes, 
+                             g2m.features = cc.genes$g2m.genes, 
+                             set.ident = F,
+                             nbin = 20)
+DimPlot(harmony, reduction = "umap", group.by = "Phase")
+```
+
+```{r}
+red = "harmony"
+harmony = FindNeighbors(harmony, dims = 1:ncomp, force.recalc = T, verbose = T,
+                          reduction = red, compute.SNN = T,
+                          graph.name = c(paste0("NN_", red, ncomp),
+                                         paste0("SNN_", red, ncomp)))
+```
+
+
+```{r}
+harmony = FindClusters(harmony, algorithm = 2, verbose = T, 
+                         graph.name = paste0("SNN_", red, ncomp),
+                         resolution = seq(0.2, 1, 0.1))
+
+# setting a more sensible identity as default
+harmony = SetIdent(harmony, value = paste0("SNN_", red, ncomp, "_res.0.3"))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+plt_list = list()
+# iterate each clustering resolution
+for(cl in colnames(harmony@meta.data)[grepl("SNN_harmony30_", colnames(harmony@meta.data))]){
+harmony = SetIdent(harmony, value = cl) # set the resolution as default identity
+
+plt_list[[cl]] = DimPlot(harmony, reduction = "umap", 
+                         label = T, raster = F, pt.size = 0.2, shuffle = T)+
+    labs(subtitle = cl)+
+    theme(legend.position = "none",
+          aspect.ratio = 1)
+} #generate UMAPs 
+
+cowplot::plot_grid(plotlist = plt_list, ncol = 3)
+
+# as we increase the resolution we get more clusters, note that clustering isn't done in the umap (umap is simply a dimensionality reduction technique)
+```
+
+
+```{r fig.width=8, fig.height=10}
+clustree(harmony, prefix = "SNN_harmony30_res.")
+```
+
+
+
+```{r fig.width=18, fig.height=5}
+pal = met.brewer("Klimt", 10)
+DimPlot(harmony, group.by = c("SNN_harmony20_res.0.2","SNN_harmony20_res.0.3","SNN_harmony20_res.0.4"), 
+        pt.size = 0.8, label = T, label.size = 12, ncol = 3, cols = pal)
+```
+
+
+```{r fig.width=18, fig.height=5}
+pal = met.brewer("Klimt", 14)
+DimPlot(harmony, group.by = c("SNN_harmony20_res.0.5","SNN_harmony20_res.0.6","SNN_harmony20_res.0.7"), 
+        pt.size = 0.8, label = T, label.size = 12, ncol = 3, cols = pal)
+```
+
+
+```{r}
+counts_df <- harmony@meta.data %>%
+  group_by(SNN_harmony20_res.0.3, cell_type) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(counts_df, aes(x = SNN_harmony20_res.0.3, y = count, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Number of Cells") +
+  xlab("Cluster") +
+  theme_minimal() +
+  labs(fill = "cell_type")
+```
+
+```{r fig.width=16, fig.height=5}
+DimPlot(harmony, group.by = "SNN_harmony20_res.0.3", split.by = "cell_type",
+        pt.size = 0.8, label.size = 12, cols = pal)
+```
+
+```{r fig.width=14, fig.height=8}
+DimPlot(harmony, group.by = "SNN_harmony20_res.0.3", split.by = "sample_type",
+        pt.size = 0.8, label.size = 12, cols = pal, ncol = 3)
+```
+
+
+```{r fig.width=12, fig.height=5}
+DimPlot(harmony, group.by = "SNN_harmony20_res.0.4", split.by = "experiment",
+        pt.size = 0.8, cols = pal)
+```
+
+```{r fig.width=16, fig.height=8}
+DimPlot(harmony, group.by = "SNN_harmony20_res.0.4", split.by = "orig.ident",
+        pt.size = 0.8, label.size = 12, cols = pal, ncol = 4)
+```
+
+
+
+
+```{r fig.width= 18, fig.height=17}
+FeaturePlot(harmony, features = c("Tigit","Foxp3","Cxcr5","Icos","Gzmb","Il2ra",
+                                  "Ccr7","Bcl6","Sh2d1a","Sell","Il1r2","Cd40lg"), 
+            order=T, pt.size = 0.8, ncol = 3)
+```
+
+
+```{r fig.width=6, fig.height=10}
+markers = c("Foxp3","Klf2","Sell","S1pr1","Ccr7","Il2ra","Selplg","Ctla4",
+            "Gzmb","Ccr2","Tnfrsf18","Tnfrsf4","Icos","Tigit","Sh2d1a","Pdcd1",
+            "Bcl6","Cxcr5","Il1r2","Stmn1","Top2a","Mki67","Cdk1",
+            "Adgre1","H2-Aa","H2-Eb1")
+
+cl_use = "SNN_harmony20_res.0.3" 
+DotPlot(harmony, features = markers, 
+        assay = "RNA",
+        group.by = cl_use) +
+  coord_flip() +
+  scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+```
+
+
+```{r}
+counts_df = harmony@meta.data %>%
+  group_by(SNN_harmony20_res.0.4, cell_type) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(counts_df, aes(x = SNN_harmony20_res.0.4, y = count, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Number of Cells") +
+  xlab("Cluster") +
+  theme_minimal() +
+  labs(fill = "cell_type")
+```
+
+
+```{r}
+cl_use = "SNN_harmony20_res.0.3" 
+harmony = SetIdent(harmony, value = cl_use)
+mk_clusters = wilcoxauc(harmony, group_by = cl_use, seurat_assay = "RNA")
+View(mk_clusters)
+```
+
+
+```{r fig.width=6, fig.height=5}
+pal = met.brewer("Klimt", 10)
+DimPlot(harmony, group.by = c("SNN_harmony20_res.0.3"), 
+        pt.size = 0.8, label = T, label.size = 12, cols = pal)
+```
+
+
+```{r}
+annot_df = c(
+  "0" = "Treg/Tfr",
+  "1" = "Metabolically Active (Treg)",
+  "2" = "Treg naive",
+  "3" = "Tfh",
+  "4" = "CellCycle",
+  "5" = "Metabolically Active (Tfr)",
+  "6" = "Tfr_Il1r2",
+  "7" = "APCs"
+)
+
+harmony$init_annot = unname(annot_df[harmony$SNN_harmony20_res.0.3])
+harmony$harmony_annot = unname(annot_df[harmony$SNN_harmony20_res.0.3])
+```
+
+
+```{r fig.width=12, fig.height=5}
+pal = met.brewer("Klimt", 10)
+DimPlot(harmony, group.by = c("SNN_harmony20_res.0.3", "init_annot"), 
+        pt.size = 1, label.size = 6, cols = pal, ncol = 2)
+```
+
+```{r}
+saveRDS(harmony, file="/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/harmony.RDS")
+```
+
+
+```{r}
+cl_use = "SNN_harmony20_res.0.3" 
+harmony = SetIdent(harmony, value = cl_use)
+srat_subset = subset(harmony, cells = WhichCells(harmony, idents = c("0","2","3","6")))
+```
+
+```{r}
+head(srat_subset@meta.data)
+```
+
+
+```{r}
+#saveRDS(subset, file="/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/harmony_subset_srat.RDS")
+```
+
+
+```{r}
+# subset = harmony_subset_srat.RDS (subset annotation)
+
+# Assign the annotation from the subset
+harmony@meta.data[rownames(subset@meta.data), "harmony_annot"] = subset$harmony_annot
+```
+
+
+```{r fig.width=14, fig.height=5}
+pal = met.brewer("Klimt", 13)
+DimPlot(harmony, group.by = c("init_annot", "harmony_annot"), 
+        pt.size = 0.8, label.size = 6, cols = pal, ncol = 2)
+```
+
+
+```{r fig.width=9, fig.height=6}
+pal = met.brewer("Klimt", 13)
+DimPlot(harmony, group.by = c("harmony_annot"), 
+        pt.size = 1, label.size = 6, cols = pal)
+```
+
+
+```{r}
+head(harmony@meta.data)
+```
+
+
+```{r}
+counts_df = harmony@meta.data %>%
+  group_by(harmony_annot, cell_type) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(counts_df, aes(x = harmony_annot, y = count, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Number of Cells") +
+  xlab("Cluster") +
+  theme_minimal() +
+  labs(fill = "cell_type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+# Step 1: Compute percentages
+counts_df = harmony@meta.data %>%
+  group_by(harmony_annot, cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(harmony_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = harmony_annot, y = percent, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("Harmony Cluster") +
+  theme_minimal() +
+  labs(fill = "Cell Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+bbknn = read.csv("/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/bbknn_annotation_metadata.csv",
+                 row.names = 1) 
+```
+
+
+```{r}
+harmony = AddMetaData(harmony, bbknn)
+```
+
+
+```{r}
+head(harmony@meta.data)
+```
+
+
+```{r fig.width=15, fig.height=5}
+pal = met.brewer("Klimt", 13)
+DimPlot(harmony, group.by = c("harmony_annot", "bbknn_annotation"), 
+        pt.size = 0.8, label.size = 6, cols = pal, ncol = 2)
+```
+
+
+```{r fig.width=24, fig.height=15}
+DimPlot(harmony, group.by = "bbknn_annotation", split.by = "harmony_annot",
+        pt.size = 0.8, label.size = 12, cols = pal, ncol = 5)
+```
+
+```{r}
+cl_use = "bbknn_annotation" 
+harmony = SetIdent(harmony, value = cl_use)
+tfr_ids_bbknn = WhichCells(harmony, idents = "Tfr")
+length(tfr_ids_bbknn)
+
+cl_use = "harmony_annot" 
+harmony = SetIdent(harmony, value = cl_use)
+tfr_ids_harmony = WhichCells(harmony, idents = "Tfr")
+length(tfr_ids_harmony)
+
+length(intersect(tfr_ids_harmony, tfr_ids_bbknn))
+```
+
+```{r}
+cl_use = "bbknn_annotation" 
+harmony = SetIdent(harmony, value = cl_use)
+etreg_ids_bbknn = WhichCells(harmony, idents = "eTreg")
+length(etreg_ids_bbknn)
+
+cl_use = "harmony_annot" 
+harmony = SetIdent(harmony, value = cl_use)
+etreg_ids_harmony = WhichCells(harmony, idents = "eTreg")
+length(etreg_ids_harmony)
+
+length(intersect(etreg_ids_harmony, etreg_ids_bbknn))
+```
+
+
+
+```{r}
+# Step 1: Compute percentages
+counts_df = harmony@meta.data %>%
+  group_by(bbknn_annotation, cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(bbknn_annotation) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = bbknn_annotation, y = percent, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("Harmony Cluster") +
+  theme_minimal() +
+  labs(fill = "Cell Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+counts_df = harmony@meta.data %>%
+  group_by(bbknn_annotation, cell_type) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(counts_df, aes(x = bbknn_annotation, y = count, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Number of Cells") +
+  xlab("Cluster") +
+  theme_minimal() +
+  labs(fill = "cell_type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+# save counts matrix 
+counts_mtx = GetAssayData(harmony, assay = "RNA", layer = "counts")
+
+writeMM(counts_mtx, 
+        file = "/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/integration_counts.mtx")
+```
+
+
+```{r}
+# save features (genes)
+write.csv(rownames(harmony), row.names = F, 
+          file = "/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/gene_names.csv")
+
+# save cell IDs (barcodes)
+write.csv(colnames(harmony), row.names = F, 
+          file = "/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/cell_barcodes.csv")
+```
+
+
+```{r}
+# save metadata
+write.csv(harmony@meta.data, row.names = T,
+          file = "/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/harmony_annotation_metadata.csv")
+```
+
+
+```{r}
+saveRDS(harmony, file="/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/harmony.RDS")
+```
+
+
+
+
+```{r}
+#ouija_treg = subset(harmony, subset = cell_type == "Treg")
+#ouija_tfh = subset(harmony, subset = cell_type == "Tfh")
+ouija_tfr = subset(harmony, cells = WhichCells(harmony, expression = cell_type == "Tfr" | day == 0))
+```
+
+
+```{r}
+saveRDS(ouija_tfr, file="/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS/ouija_tfr_srat.RDS")
+```
+
+

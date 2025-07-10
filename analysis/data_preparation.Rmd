@@ -1,0 +1,430 @@
+---
+title: "data_preparation"
+author: "mb_vasques"
+date: "2025-05-19"
+output: html_document
+---
+
+Load necessary packages
+
+```{r}
+# data manipulation
+library(Seurat)
+library(SeuratData)
+library(Matrix)
+library(dplyr)
+
+# initial filtering
+library(DropletUtils)
+
+# clustering
+library(clustree)
+
+# fast DE
+library(presto)
+
+# gene set enrichment
+library(gprofiler2)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+
+set.seed(1)
+```
+
+
+```{r}
+create_obj = function(dir, name){
+  sample_mtx = Read10X(data.dir = paste0(dir, "/filtered_feature_bc_matrix/"))
+  print(paste0(dir, "/filtered_feature_bc_matrix/"))
+  
+  # summarise TCR segments
+  trb = rownames(sample_mtx)[c(grep("^Trbv", rownames(sample_mtx)), 
+                             grep("^Trbd", rownames(sample_mtx)),
+                             grep("^Trbj", rownames(sample_mtx)),
+                             grep("^Trbc", rownames(sample_mtx)))]
+  sample_mtx = rbind(sample_mtx, Matrix::colSums(sample_mtx[trb,]))
+  rownames(sample_mtx)[nrow(sample_mtx)] = "Trb-all"
+  sample_mtx = sample_mtx[!(rownames(sample_mtx) %in% trb),]
+  
+  tra = rownames(sample_mtx)[c(grep("^Trav", rownames(sample_mtx)), 
+                             grep("^Traj", rownames(sample_mtx)),
+                             grep("^Trac", rownames(sample_mtx)))]
+  sample_mtx = rbind(sample_mtx, Matrix::colSums(sample_mtx[tra,]))
+  rownames(sample_mtx)[nrow(sample_mtx)] = "Tra-all"
+  sample_mtx = sample_mtx[!(rownames(sample_mtx) %in% tra),]
+  
+  
+  obj = CreateSeuratObject(counts = sample_mtx, assay = 'RNA')
+  
+  saveRDS(object = obj, file = name)
+  return(obj)
+}
+```
+
+
+```{r}
+create_obj(dir = "/Users/maria/OneDrive/Documentos/iMM/data/D104T11_forcedCells", 
+           name = "D104T11_raw_srat.RDS")
+```
+
+```{r}
+srat = readRDS("/Users/maria/OneDrive/Documentos/iMM/analysis/D104T11_raw_srat.RDS")
+dim(srat)
+```
+
+```{r}
+srat$orig.ident = "D104T11"
+```
+
+
+```{r}
+srat = PercentageFeatureSet(srat, col.name = "percent.mt", assay = "RNA", pattern = "^mt-") 
+srat = PercentageFeatureSet(srat, col.name = "percent.rb", assay = "RNA", pattern = "^Rp(s|l)") 
+```
+
+```{r}
+srat@meta.data
+```
+
+
+
+```{r}
+# define thresholds
+qcthr = c("maxMT" = 15, "minC" = 500, "minG" = 500, "maxC" = 20000, "maxG" = 4000)
+
+cells = srat$percent.mt<qcthr["maxMT"] & srat$nCount_RNA>qcthr["minC"] &
+        srat$nCount_RNA<qcthr["maxC"] & srat$nFeature_RNA>qcthr["minG"] &
+        srat$nFeature_RNA<qcthr["maxG"]
+
+# filter the srat object
+srat_filt = subset(srat, cells = colnames(srat)[cells])
+```
+
+
+```{r}
+saveRDS(srat_filt, file = "/Users/maria/OneDrive/Documentos/iMM/data/RDS/D104T11_filt_srat.RDS")
+```
+
+
+```{r}
+srat_filt = readRDS("/Users/maria/OneDrive/Documentos/iMM/data/RDS/D104T16_filt_srat.RDS")
+dim(srat_filt)
+```
+
+
+```{r}
+# Log-Transformation
+DefaultAssay(srat_filt) = "RNA"
+srat_filt = NormalizeData(srat_filt, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+```{r}
+# Highly Variable Genes (HVG) are important to differentiate between cell types
+srat_filt = FindVariableFeatures(srat_filt, selection.method = "vst", 
+                                 nfeatures = 5000)
+print(length(VariableFeatures(srat_filt)))
+```
+
+
+```{r, fig.width=10, fig.height=8}
+# Identify the 20 most highly variable genes
+top20 = head(VariableFeatures(srat_filt), 20)
+
+# plot variable features with and without labels
+plot1 = VariableFeaturePlot(srat_filt)
+plot2 = LabelPoints(plot = plot1, points = top20, repel = TRUE)
+plot2
+```
+
+
+```{r}
+srat_filt = ScaleData(srat_filt, vars.to.regress = c("nCount_RNA", "percent.mt",
+                                                     "percent.rb"), 
+                      do.scale = F, verbose = T)
+
+# when we want to separate cell types in the scaling we regress out the number of counts, because we want to separate based on cell type and not gene level
+# to focus the variability in the data set to diferenciate between cell types
+```
+
+
+```{r}
+srat_filt = SCTransform(srat_filt, do.correct.umi = T, verbose = F,
+                        vars.to.regress = c("nCount_RNA","percent.mt","percent.rb"),  
+                        variable.features.rv.th = 1, variable.features.n = NULL,
+                        seed.use = 1)
+```
+
+
+```{r}
+DefaultAssay(srat_filt) = "SCT"
+list_hvg = list("RNA" = VariableFeatures(srat_filt, assay = "RNA"), 
+                "SCT" = VariableFeatures(srat_filt, assay = "SCT"))
+gplots::venn(list_hvg)
+```
+
+
+```{r}
+srat_filt = RunPCA(srat_filt, verbose = T, assay = "SCT", npcs = 50)
+```
+
+
+```{r, fig.width=9, fig.height=6}
+VizDimLoadings(srat_filt, dims = 1:3, reduction = "pca", ncol = 3)
+```
+
+
+```{r}
+ep = ElbowPlot(srat_filt, ndims = 50)
+print(ep)
+```
+
+
+```{r}
+ncomp = 30
+srat_filt = RunUMAP(srat_filt, dims = 1:ncomp, verbose = F)
+```
+
+
+
+```{r}
+# separate between cell cycles/phases, using list of known genes associated w each phase
+srat_filt = CellCycleScoring(srat_filt, 
+                             s.features = cc.genes$s.genes, 
+                             g2m.features = cc.genes$g2m.genes, 
+                             set.ident = F,
+                             nbin = 20)
+DimPlot(srat_filt, reduction = "umap", group.by = "Phase")
+```
+
+
+```{r fig.width=12, fig.height=5}
+FeaturePlot(srat_filt, features = c("Foxp3","Cxcr5"), order=T)
+```
+
+
+```{r}
+red = "pca"
+srat_filt = FindNeighbors(srat_filt, dims = 1:ncomp, force.recalc = T, verbose = T,
+                          reduction = red, compute.SNN = T,
+                          graph.name = c(paste0("NN_", red, ncomp),
+                                         paste0("SNN_", red, ncomp)))
+# see how similar cells are to other cells in 15 PC space
+```
+
+```{r}
+srat_filt = FindClusters(srat_filt, algorithm = 2, verbose = T, 
+                         graph.name = paste0("NN_", red, ncomp),
+                         resolution = seq(0.2, 1, 0.1))
+
+# setting a more sensible identity as default
+srat_filt = SetIdent(srat_filt, value = paste0("NN_", red, ncomp, "_res.0.3"))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+plt_list = list()
+# iterate each clustering resolution
+for(cl in colnames(srat_filt@meta.data)[grepl("^NN_pca30_", colnames(srat_filt@meta.data))]){
+srat_filt = SetIdent(srat_filt, value = cl) # set the resolution as default identity
+
+plt_list[[cl]] = DimPlot(srat_filt, reduction = "umap", 
+                         label = T, raster = F, pt.size = 0.2, shuffle = T)+
+    labs(subtitle = cl)+
+    theme(legend.position = "none",
+          aspect.ratio = 1)
+} #generate UMAPs 
+
+cowplot::plot_grid(plotlist = plt_list, ncol = 3)
+
+# as we increase the resolution we get more clusters, note that clustering isn't done in the umap (umap is simply a dimensionality reduction technique)
+```
+
+
+```{r}
+srat_filt = FindClusters(srat_filt, algorithm = 2, verbose = T, 
+                         graph.name = paste0("SNN_", red, ncomp),
+                         resolution = seq(0.2, 1, 0.1))
+
+# setting a more sensible identity as default
+srat_filt = SetIdent(srat_filt, value = paste0("SNN_", red, ncomp, "_res.0.3"))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+plt_list = list()
+# iterate each clustering resolution
+for(cl in colnames(srat_filt@meta.data)[grepl("SNN_pca30_", colnames(srat_filt@meta.data))]){
+srat_filt = SetIdent(srat_filt, value = cl) # set the resolution as default identity
+
+plt_list[[cl]] = DimPlot(srat_filt, reduction = "umap", 
+                         label = T, raster = F, pt.size = 0.2, shuffle = T)+
+    labs(subtitle = cl)+
+    theme(legend.position = "none",
+          aspect.ratio = 1)
+} #generate UMAPs 
+
+cowplot::plot_grid(plotlist = plt_list, ncol = 3)
+
+# as we increase the resolution we get more clusters, note that clustering isn't done in the umap (umap is simply a dimensionality reduction technique)
+```
+
+```{r fig.width=8, fig.height=10}
+clustree(srat_filt, prefix = "SNN_pca30_res.")
+```
+
+
+
+```{r}
+cl_use = "SNN_pca30_res.0.3" 
+DotPlot(srat_filt, features = c("Foxp3","Cxcr5","Ccr7","Klf2","S1pr1",
+                                "Ctla4","Selplg","Birc5","Top2a","Mki67","Cdk1"), 
+        assay = "SCT", 
+        group.by = cl_use) +
+  coord_flip()
+```
+
+
+```{r}
+cl_use = "SNN_pca30_res.0.3" 
+srat_filt = SetIdent(srat_filt, value = cl_use)
+mk_clusters = wilcoxauc(srat_filt, group_by = cl_use, seurat_assay = "SCT")
+```
+
+
+
+```{r}
+srat_filt = RunPCA(srat_filt, verbose = T, assay = "RNA", npcs = 50)
+```
+
+
+```{r, fig.width=9, fig.height=6}
+VizDimLoadings(srat_filt, dims = 1:3, reduction = "pca", ncol = 3)
+```
+
+
+```{r}
+ep = ElbowPlot(srat_filt, ndims = 50)
+print(ep)
+```
+
+
+```{r}
+ncomp = 20
+srat_filt = RunUMAP(srat_filt, dims = 1:ncomp, verbose = F)
+```
+
+
+```{r}
+# separate between cell cycles/phases, using list of known genes associated w each phase
+srat_filt = CellCycleScoring(srat_filt, 
+                             s.features = cc.genes$s.genes, 
+                             g2m.features = cc.genes$g2m.genes, 
+                             set.ident = F,
+                             nbin = 20)
+DimPlot(srat_filt, reduction = "umap", group.by = "Phase")
+```
+
+
+```{r}
+red = "pca"
+srat_filt = FindNeighbors(srat_filt, dims = 1:ncomp, force.recalc = T, verbose = T,
+                          reduction = red, compute.SNN = T,
+                          graph.name = c(paste0("NN_", red, ncomp),
+                                         paste0("SNN_", red, ncomp)))
+# see how similar cells are to other cells in 15 PC space
+```
+
+
+```{r}
+srat_filt = FindClusters(srat_filt, algorithm = 2, verbose = T, 
+                         graph.name = paste0("NN_", red, ncomp),
+                         resolution = seq(0.2, 1, 0.1))
+
+# setting a more sensible identity as default
+srat_filt = SetIdent(srat_filt, value = paste0("NN_", red, ncomp, "_res.0.3"))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+plt_list = list()
+# iterate each clustering resolution
+for(cl in colnames(srat_filt@meta.data)[grepl("^NN_pca20_", colnames(srat_filt@meta.data))]){
+srat_filt = SetIdent(srat_filt, value = cl) # set the resolution as default identity
+
+plt_list[[cl]] = DimPlot(srat_filt, reduction = "umap", 
+                         label = T, raster = F, pt.size = 0.2, shuffle = T)+
+    labs(subtitle = cl)+
+    theme(legend.position = "none",
+          aspect.ratio = 1)
+} #generate UMAPs 
+
+cowplot::plot_grid(plotlist = plt_list, ncol = 3)
+
+# as we increase the resolution we get more clusters, note that clustering isn't done in the umap (umap is simply a dimensionality reduction technique)
+```
+
+
+```{r}
+srat_filt = FindClusters(srat_filt, algorithm = 2, verbose = T, 
+                         graph.name = paste0("SNN_", red, ncomp),
+                         resolution = seq(0.2, 1, 0.1))
+
+# setting a more sensible identity as default
+srat_filt = SetIdent(srat_filt, value = paste0("SNN_", red, ncomp, "_res.0.3"))
+```
+
+
+```{r, fig.width=10, fig.height=10}
+plt_list = list()
+# iterate each clustering resolution
+for(cl in colnames(srat_filt@meta.data)[grepl("SNN_pca20_", colnames(srat_filt@meta.data))]){
+srat_filt = SetIdent(srat_filt, value = cl) # set the resolution as default identity
+
+plt_list[[cl]] = DimPlot(srat_filt, reduction = "umap", 
+                         label = T, raster = F, pt.size = 0.2, shuffle = T)+
+    labs(subtitle = cl)+
+    theme(legend.position = "none",
+          aspect.ratio = 1)
+} #generate UMAPs 
+
+cowplot::plot_grid(plotlist = plt_list, ncol = 3)
+
+# as we increase the resolution we get more clusters, note that clustering isn't done in the umap (umap is simply a dimensionality reduction technique)
+```
+
+
+```{r fig.width=8, fig.height=10}
+clustree(srat_filt, prefix = "SNN_pca20_res.")
+```
+
+```{r fig.width=12, fig.height=5}
+FeaturePlot(srat_filt, features = c("Foxp3","Cxcr5"), order=T)
+```
+
+
+```{r}
+cl_use = "SNN_pca20_res.0.2" 
+DotPlot(srat_filt, features = c("Foxp3","Ccr7","Klf2","S1pr1",
+                                "Ctla4","Selplg","Cxcr5","Bcl6","Pdcd1",
+                                "Birc5","Top2a","Mki67","Cdk1"), 
+        assay = "RNA", 
+        group.by = cl_use) +
+  coord_flip()
+```
+
+```{r}
+cl_use = "SNN_pca20_res.0.2" 
+srat_filt = SetIdent(srat_filt, value = cl_use)
+mk_clusters_RNA = wilcoxauc(srat_filt, group_by = cl_use, seurat_assay = "RNA")
+```
+
+
+
+
+
+

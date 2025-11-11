@@ -1,0 +1,1496 @@
+---
+title: "tcr_analysis"
+author: "mb_vasques"
+date: "2025-07-30"
+output: html_document
+---
+
+
+# Load necessary packages
+
+```{r}
+# data manipulation
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(tidyr)
+library(igraph)
+library(purrr)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+library(ggVennDiagram)
+library(VennDiagram)
+library(networkD3)
+library(eulerr)
+library(ggpubr)
+library(reshape2)
+
+# palette
+library(MetBrewer)
+
+set.seed(1)
+```
+
+
+# Load the V(D)J CellRanger output files
+
+```{r}
+path = c("C:/Users/maria/Documents/iMM/thesis/analysis/results/tcr_cellranger/")
+
+sample_names = c("D107T8","D107T9","D107T10")
+sample_equiv = c(
+  "D107T8" = "D104T13",
+  "D107T9" = "D104T14",
+  "D107T10" = "D104T15"
+  )
+
+sorting = c(
+  "D107T8" = "Treg",
+  "D107T9" = "Tfh",
+  "D107T10" = "Tfr"
+  )
+
+sample_tcr = list()
+
+for (s in sample_names) {
+  message("Processing sample: ", s)
+  filt_contig = read.csv(paste0(path, s, "/filtered_contig_annotations.csv")) 
+  message("# of cells in D107 sample: ", dim(table(filt_contig$barcode)))
+  
+  cells = WhichCells(srat, expression = orig.ident == sample_equiv[[s]])
+  cell_ids = unlist(lapply(cells, function(x) strsplit(x, "_")[[1]][2]))
+  message("# of cells in ", sample_equiv[[s]]," sample: ", length(cell_ids))
+  
+  # Filter contigs to only include cells (barcodes) in cell_ids
+  filt_contig = filt_contig[filt_contig$barcode %in% cell_ids, ]
+  message("# of cells in common: ", dim(table(filt_contig$barcode)))
+  
+  filt_contig$full_length = as.logical(filt_contig$full_length)
+  filt_contig$productive = as.logical(filt_contig$productive)
+  all_true = all(filt_contig$full_length & filt_contig$productive)
+  message("All contigs full_length and productive? ", all_true)
+  
+  tcr_table = list()
+  
+  for (i in seq_len(nrow(filt_contig))) {
+    row = filt_contig[i, ]
+    barcode = row$barcode
+    chain_data = paste(row$v_gene, row$d_gene, row$j_gene, row$c_gene, sep = ",")
+    
+    if (!barcode %in% names(tcr_table)) {
+      tcr_table[[barcode]] = list(
+        barcode = paste0(sample_equiv[[s]],"_",barcode),
+        cell_type = sorting[[s]],
+        TRB_1 = NA, TRB_2 = NA,
+        TRA_1 = NA, TRA_2 = NA,
+        CDR3 = row$cdr3,
+        clonotype_id = row$raw_clonotype_id,
+        consensus = row$raw_consensus_id,
+        exact_subclonotype = row$exact_subclonotype_id
+      )
+    } 
+
+  
+  # Fill chain data
+  if (row$chain == "TRA") {
+      if (is.na(tcr_table[[barcode]]$TRA_1)) {
+        tcr_table[[barcode]]$TRA_1 = chain_data
+      } else if (is.na(tcr_table[[barcode]]$TRA_2)) {
+        tcr_table[[barcode]]$TRA_2 = chain_data
+      }
+    } else if (row$chain == "TRB") {
+      if (is.na(tcr_table[[barcode]]$TRB_1)) {
+        tcr_table[[barcode]]$TRB_1 = chain_data
+      } else if (is.na(tcr_table[[barcode]]$TRB_2)) {
+        tcr_table[[barcode]]$TRB_2 = chain_data
+      }
+    }
+  }  
+  
+  tcr_df = do.call(rbind, lapply(tcr_table, as.data.frame))
+  tcr_df$chain_count = rowSums(!is.na(tcr_df[, c("TRA_1", "TRA_2", "TRB_1", "TRB_2")]))
+  sample_tcr[[s]] = tcr_df
+}
+
+```
+
+
+```{r}
+# Compute percentage of clonotype counts per sample
+compute_percentages = function(clones_df) {
+  colnames(clones_df) = c("clonotype_id", "count")
+  clones_df = clones_df[order(clones_df$count, decreasing = TRUE), ]
+  clones_df$pct = 100 * (clones_df$count / sum(clones_df$count))
+  clones_df$cum_pct = cumsum(clones_df$pct)
+  clones_df$rank = 1:nrow(clones_df)
+  return(clones_df)
+}
+
+clones_treg = as.data.frame(table(sample_tcr$D107T8$clonotype_id))
+clones_treg = compute_percentages(clones_treg)
+message("Treg: total # of colonotypes is ", length(unique(clones_treg$clonotype_id)))
+
+clones_tfr = as.data.frame(table(sample_tcr$D107T10$clonotype_id))
+clones_tfr = compute_percentages(clones_tfr)
+message("Tfr: total # of colonotypes is ", length(unique(clones_tfr$clonotype_id)))
+
+clones_tfh = as.data.frame(table(sample_tcr$D107T9$clonotype_id))
+clones_tfh = compute_percentages(clones_tfh)
+message("Tfh: total # of colonotypes is ", length(unique(clones_tfh$clonotype_id)))
+```
+
+```{r}
+message("Treg: # of colonotypes with > 1 count is ", sum(clones_treg$count > 1))
+message("Tfr: # of colonotypes with > 1 count is ", sum(clones_tfr$count > 1))
+message("Tfh: # of colonotypes with > 1 count is ", sum(clones_tfh$count > 1))
+```
+
+
+```{r}
+message("Treg: % of colonotypes with > 1 count is ", round(mean(clones_treg$count > 1) * 100, 2))
+message("Tfr: % of colonotypes with > 1 count is ", round(mean(clones_tfr$count > 1) * 100, 2))
+message("Tfh: % of colonotypes with > 1 count is ", round(mean(clones_tfh$count > 1) * 100, 2))
+```
+
+
+```{r fig.width=10, fig.height=6}
+clones_treg$Sample = "Treg"
+clones_tfr$Sample = "Tfr"
+clones_tfh$Sample = "Tfh"
+
+clones_all = bind_rows(clones_treg, clones_tfr, clones_tfh)
+
+# Plot
+tcr1 = ggplot(clones_all, aes(x = rank, y = cum_pct, color = Sample)) +
+  geom_line(linewidth = 1.6) +
+  scale_x_continuous(limits = c(0, max(clones_all$rank)), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0, 100), expand = c(0, 0)) +
+  scale_color_manual(values = c("Treg" = "#D880AC", "Tfr" = "#924099", "Tfh" = "#64A572")) +
+  labs(
+    x = "Unique TCRs (Ranked by Count)",
+    y = "Cumulative Percentage (%)",
+    color = "Sample"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    legend.title = element_text(size = 28, face = "bold", margin = margin(b=10)),
+    legend.text = element_text(size = 28, margin = margin(b=5)),
+    legend.position = "right",
+    axis.title.x = element_text(margin = margin(t=10)),
+    axis.title = element_text(size = 24, face = "bold"),
+    axis.text = element_text(size = 22),
+    legend.key.width = unit(1.5, "cm"),
+    legend.key.height = unit(0.8, "cm"),
+    plot.margin = margin(t = 10, r = 20, b = 20, l = 10)
+    )
+tcr1
+```
+
+
+```{r fig.width=8, fig.height=8}
+# Compute number of cells per sample
+counts_df = clones_all %>%
+  group_by(Sample) %>%
+  summarise(total_count = sum(count), .groups = "drop") 
+
+
+# Plot
+ncells = ggplot() + 
+  geom_bar(data = counts_df, aes(x = Sample, y = total_count, fill = Sample),
+                    stat = "identity", position = "stack", width = 0.8) +
+  geom_text(data = counts_df, aes(x = Sample, y = total_count, label = total_count),
+    vjust = -0.3, size = 12) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  labs(x = "Sample", y="Number of Cells", fill = "Sample") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.title.x = element_text(size = 24, face = "bold", margin = margin(t = 15)),
+        axis.title.y = element_text(size = 24, face = "bold", margin = margin(r = 15)),
+        axis.text.x = element_text(size = 28, colour = "black"),
+        axis.text.y = element_text(size = 20),
+        plot.margin = margin(t = 10, r = 50, b = 10, l = 10)) +
+  scale_fill_manual(values = c("Treg" = "#D880AC", "Tfr" = "#924099", "Tfh" = "#64A572"))
+
+ncells
+```
+
+
+```{r fig.width=12, fig.height=8}
+# Compute number of "clonotypes" per sample
+counts_df = clones_all %>%
+  group_by(Sample) %>%
+  summarise(total_count = n(), .groups = "drop") 
+
+# compute number of "clonotypes" with more than 1 clone
+clones_df = clones_all %>%
+  group_by(Sample) %>%
+  filter(count > 1) %>%
+  summarise(clone_count = n(), .groups = "drop")
+
+# combine
+data_df = clones_df %>%
+  left_join(counts_df, by = "Sample")
+
+# Plot
+nclones = ggplot() +
+  geom_bar(data = counts_df, aes(x = Sample, y = total_count),
+           stat = "identity", fill = "#F2F2F2", color = "black", width = 0.5) +
+  geom_bar(data = data_df, 
+           aes(x = Sample, y = clone_count, fill = Sample),
+           stat = "identity", width = 0.5, color = "black") +
+  geom_text(data = counts_df, aes(x = Sample, y = total_count, label = total_count),
+            vjust = -0.3, size = 12) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  scale_fill_manual(values = c("Treg" = "#D880AC", "Tfr" = "#924099", "Tfh" = "#64A572"),
+                    labels = c("Tfh clonotypes", "Tfr clonotypes", "Treg clonotypes")) +
+  labs(x = "Sample", y = "Number of unique TCRs") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 24, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 24, face = "bold", margin = margin(r = 15)),
+    axis.text.x = element_text(size = 28, colour = "black"),
+    axis.text.y = element_text(size = 20),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 28, margin = margin(b=10, l=5)),
+    legend.key.width = unit(1.5, "cm"),
+    legend.key.spacing.y = unit(1, "cm"),
+    plot.margin = margin(t = 10, r = 50, b = 10, l = 10)
+  )
+nclones
+```
+
+
+```{r fig.width=8, fig.height=8}
+# Step 1: Compute percentages
+counts_df = clones_all %>%
+  group_by(Sample) %>%
+  filter(count > 1) %>%
+  summarise(count = n(), .groups = "drop") 
+
+
+# Step 2: Plot
+ggplot() + 
+  geom_bar(data = counts_df, aes(x = Sample, y = count, fill = Sample),
+                    stat = "identity", position = "stack") +
+  geom_text(data = counts_df, aes(x = Sample, y = count, label = count),
+    vjust = -0.2, size = 9) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  labs(x = "Sample", y="Number of Clonotypes with >1 cell", fill = "Sample") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.title.x = element_text(size = 22, face = "bold", margin = margin(t = 15)),
+        axis.title.y = element_text(size = 22, face = "bold", margin = margin(r = 15)),
+        axis.text.x = element_text(size = 24, colour = "black"),
+        axis.text.y = element_text(size = 16),
+        plot.margin = margin(t = 10, r = 50, b = 10, l = 10)) +
+  scale_fill_manual(values = c("Treg" = "#D880AC", "Tfr" = "#924099", "Tfh" = "#64A572"))
+
+```
+
+## Diversity Indexes
+
+```{r}
+sample_clonotypes = list(
+  "Treg" = clones_treg,
+  "Tfh" = clones_tfh,
+  "Tfr" = clones_tfr
+)
+
+for (s in sorting) {
+  message("Sample: ", s)
+  
+  df = sample_clonotypes[[s]]
+  df$proportions = df$count / sum(df$count)
+
+  # Shannon index (H')
+  shannon_index = -sum(df$proportions * log(df$proportions))
+  
+  # Simpson index (λ)
+  simpson_index = sum(df$proportions^2)
+  
+  # Inverse Simpson index (1/λ)
+  inv_simpson = 1/simpson_index
+  
+  # Gini–Simpson index (1 - λ)
+  gini_simpson = 1 - simpson_index
+  
+  message("Shannon Index (H'): ", round(shannon_index, 4))
+  message("Simpson Index (λ): ", round(simpson_index, 4))
+  message("Inverse Diversity Index (1/λ): ", round(inv_simpson, 2))
+  message("Simpson Diversity Index (1 - λ): ", round(gini_simpson, 4), "\n")
+}
+```
+
+
+## Top Clonotypes per Sample
+
+```{r}
+y_limit = 25
+x_limit = 50
+x_labels = ifelse(clones_treg$rank[clones_treg$rank <= x_limit] <= 7,
+                  as.character(clones_treg$clonotype_id[clones_treg$rank <= x_limit]),
+                  "")  
+
+bar_positions = barplot(height = clones_treg$count[clones_treg$rank <= x_limit],
+                        col = "#D880AC",
+                        border = NA,
+                        xlab = "",
+                        ylab = "Counts",
+                        main = paste("Treg Clonotype Distribution (Top 50)"),
+                        space = 0,
+                        axes = T,
+                        ylim = c(0,y_limit),
+                        names.arg = x_labels,
+                        cex.names = 0.8,
+                        las = 2) 
+axis(side = 1, at = bar_positions, labels = F, tick = T, lwd = 1)
+```
+
+
+```{r}
+y_limit = 25
+x_limit = 50
+x_labels = ifelse(clones_tfr$rank[clones_tfr$rank <= x_limit] <= 10,
+                  as.character(clones_tfr$clonotype_id[clones_tfr$rank <= x_limit]),
+                  "")  
+
+bar_positions = barplot(height = clones_tfr$count[clones_tfr$rank <= x_limit],
+                        col = "#924099",
+                        border = NA,
+                        xlab = "",
+                        ylab = "Counts",
+                        main = paste("Tfr Clonotype Distribution (Top 50)"),
+                        space = 0,
+                        axes = T,
+                        ylim = c(0,y_limit),
+                        names.arg = x_labels,
+                        cex.names = 0.8,
+                        las = 2) 
+axis(side = 1, at = bar_positions, labels = F, tick = T, lwd = 1)
+```
+
+
+```{r}
+y_limit = 25
+x_limit = 50
+x_labels = ifelse(clones_tfh$rank[clones_tfh$rank <= x_limit] <= 14,
+                  as.character(clones_tfh$clonotype_id[clones_tfh$rank <= x_limit]),
+                  "")  
+
+bar_positions = barplot(height = clones_tfh$count[clones_tfh$rank <= x_limit],
+                        col = "#64A572",
+                        border = NA,
+                        xlab = "",
+                        ylab = "Counts",
+                        main = paste("Tfr Clonotype Distribution (Top 50)"),
+                        space = 0,
+                        axes = T,
+                        ylim = c(0,y_limit),
+                        names.arg = x_labels,
+                        cex.names = 0.8,
+                        las = 2) 
+axis(side = 1, at = bar_positions, labels = F, tick = T, lwd = 1)
+```
+
+
+```{r}
+# Inspect specific clonotypes
+subset = sample_tcr$D107T9 %>%
+  filter(clonotype_id == "clonotype1")
+```
+
+
+# Analyse TCR overlap between samples
+
+
+## Determine clonotype assignment
+
+```{r}
+# Combine all sample TCR data frames into one
+all_tcr = do.call(rbind, sample_tcr)
+all_tcr$clonotype_id = NULL
+all_tcr$consensus = NULL
+all_tcr$exact_subclonotype = NULL
+head(all_tcr)
+```
+
+
+
+```{r}
+# Build initial graph only from multi-chain subclonotypes
+multi_chain = all_tcr %>%
+  filter(chain_count > 1) %>%
+  rowwise() %>%
+  mutate(
+    # Collect all chain gene sequences into a list
+    chains = list(na.omit(c(TRB_1, TRA_1, TRB_2, TRA_2))),
+    # Sort the sequences and generate a signature 
+    subclonotype_signature = paste(sort(chains), collapse = ";")
+  ) %>%
+  ungroup() %>%
+  group_by(subclonotype_signature) %>% # identify exact subclonotypes
+  mutate(subclonotype_id = cur_group_id()) %>% 
+  ungroup()
+
+# Group exact subclonotypes ready to join into clonotypes
+multi_chain = multi_chain %>%
+  group_by(subclonotype_id) %>%
+  summarise(
+    barcode = list(unique(barcode)),
+    TRA = list(as.character(na.omit(unique(c(TRA_1, TRA_2))))),  
+    TRB = list(as.character(na.omit(unique(c(TRB_1, TRB_2))))),  
+    CDR3 = list(na.omit(unique(CDR3))),                 
+    chain_count = first(chain_count)                    
+  )
+
+
+multi_n = nrow(multi_chain)
+multi_edges = list()
+
+
+for (i in 1:(multi_n - 1)) {
+  for (j in (i + 1):multi_n) {  # Compare pairs of subclonotypes
+    
+    # Extract chain count
+    count_i = multi_chain$chain_count[i]
+    count_j = multi_chain$chain_count[j]
+    
+    if (count_i == count_j) next # skip if same number of chains
+    
+    tra_i = multi_chain$TRA[[i]]
+    trb_i = multi_chain$TRB[[i]]
+    cdr3_i = multi_chain$CDR3[[i]]
+    
+    tra_j = multi_chain$TRA[[j]]
+    trb_j = multi_chain$TRB[[j]]
+    cdr3_j = multi_chain$CDR3[[j]]
+    
+    if (length(intersect(cdr3_i, cdr3_j)) == 0) next # skip if no shared CDR3
+    
+    if (count_i <= count_j) {
+      tra_s = tra_i
+      trb_s = trb_i
+      tra_l = tra_j
+      trb_l = trb_j
+    } else {
+      tra_s = tra_j
+      trb_s = trb_j
+      tra_l = tra_i
+      trb_l = trb_i
+    }
+    
+    # Check whether all chains in smaller subclonotype exist in larger one
+    tra_match = all(tra_s %in% tra_l)
+    trb_match = all(trb_s %in% trb_l)
+    
+    # If both TRA and TRB match, store edge
+    if (tra_match && trb_match) {
+      multi_edges  = append(multi_edges , list(c(i, j)))
+    }
+  }
+}
+
+
+multi_nodes = as.character(1:multi_n)
+
+# Build the graph of subclonotypes
+if (length(multi_edges) > 0) {
+  edge_matrix = do.call(rbind, multi_edges)
+  edge_matrix = apply(edge_matrix, 2, as.character)
+  g_multi = graph_from_edgelist(edge_matrix, directed = FALSE)
+  g_multi = add_vertices(g_multi, nv = length(setdiff(multi_nodes, V(g_multi)$name)),
+                         name = setdiff(multi_nodes, V(g_multi)$name))
+} else {
+  g_multi = make_empty_graph(n = length(multi_nodes), directed = FALSE)
+  V(g_multi)$name = multi_nodes
+}
+
+# Assign clonotype IDs to multi-chain subclonotypes
+multi_components = components(g_multi)
+
+multi_chain$clonotype_id = NA_character_
+
+clonotype_labels = setNames(paste0("clonotype", seq_along(unique(multi_components$membership))),
+                                   unique(multi_components$membership))
+multi_chain$clonotype_id[as.integer(names(multi_components$membership))] = 
+  clonotype_labels[as.character(multi_components$membership)]
+```
+
+
+```{r}
+length(which(is.na(multi_chain$clonotype_id)))
+```
+
+
+```{r}
+# Attach single-chain subclonotypes (if unambiguous)
+
+single_chain = all_tcr %>%
+  filter(chain_count == 1) %>%
+  rowwise() %>%
+  mutate(
+    # Collect all chain gene sequences into a list
+    chains = list(na.omit(c(TRB_1, TRA_1, TRB_2, TRA_2))),
+    # Sort the sequences and generate a signature
+    subclonotype_signature = paste(sort(chains), collapse = ";")
+  ) %>%
+  group_by(subclonotype_signature, CDR3) %>%
+  mutate(
+    # Offset subclonotype IDs to avoid overlap with multi_chain ones
+    subclonotype_id = cur_group_id() + max(multi_chain$subclonotype_id)
+  ) %>%
+  ungroup()
+
+
+single_chain = single_chain %>%
+  group_by(subclonotype_id) %>% # group single-chain exact subclonotypes 
+  summarise(
+    barcode = list(unique(barcode)),
+    TRA = list(as.character(na.omit(unique(c(TRA_1, TRA_2))))),  
+    TRB = list(as.character(na.omit(unique(c(TRB_1, TRB_2))))),  
+    CDR3 = list(na.omit(unique(CDR3))),                 
+    chain_count = first(chain_count)                    
+  )
+
+
+single_chain$clonotype_id = NA_character_
+ambig_connections = list()  
+
+for (i in 1:nrow(single_chain)) {
+  tra_s = single_chain$TRA[[i]]
+  trb_s = single_chain$TRB[[i]]
+  cdr3_s = single_chain$CDR3[[i]]
+  
+  matches = c()
+  
+  for (j in 1:nrow(multi_chain)) {
+    tra_m = multi_chain$TRA[[j]]
+    trb_m = multi_chain$TRB[[j]]
+    cdr3_m = multi_chain$CDR3[[j]]
+    
+    if (length(intersect(cdr3_s, cdr3_m)) == 0) next
+    
+    if (all(tra_s %in% tra_m) && all(trb_s %in% trb_m)) {
+      matches = c(matches, multi_chain$clonotype_id[j])
+    }
+  }
+  
+  if (length(unique(matches)) == 1) {
+    # unique match –> assign clonotype
+    single_chain$clonotype_id[i] = matches[1]
+  } else if (length(unique(matches)) > 1) {
+    # ambiguous match 
+    ambig_connections[[as.character(single_chain$subclonotype_id[i])]] = unique(matches)
+  }
+}
+
+
+unassigned = which(is.na(single_chain$clonotype_id))
+
+if (length(unassigned) > 0) {
+  start_index = length(unique(multi_chain$clonotype_id)) + 1
+  new_labels = paste0("clonotype", seq(from = start_index, length.out = length(unassigned)))
+  single_chain$clonotype_id[unassigned] = new_labels
+}
+```
+
+
+```{r}
+# Merge
+subclonotypes_df = bind_rows(multi_chain, single_chain)
+
+clonotype_map = subclonotypes_df %>%
+  select(subclonotype_id, clonotype_id, barcode) %>%
+  unnest(cols = barcode)
+
+all_tcr = all_tcr %>%
+  left_join(clonotype_map, by = "barcode") %>%
+  group_by(clonotype_id) %>%
+  mutate(
+    # create consensus groupings based on CDR3s 
+    consensus = paste0(clonotype_id, "_consensus", match(CDR3, unique(CDR3))),
+    # assign numbers to exact subclonotypes
+    exact_subclonotype = match(subclonotype_id, unique(subclonotype_id))
+    ) %>%
+  ungroup()
+```
+
+
+
+```{r}
+# Record subclonotypes with ambiguous assignment
+ambig_df = data.frame(
+  subclonotype_id = names(ambig_connections),
+  possible_clonotypes = sapply(ambig_connections, toString),
+  stringsAsFactors = FALSE
+)
+```
+
+
+```{r}
+# Save
+write.csv(ambig_df, row.names = F, file = paste0(path, "ambig_schain_clonotypes.csv"))
+write.csv(all_tcr, row.names = F, file = paste0(path, "all_tcr_clonotypes.csv"))
+```
+
+
+## Check Overlaps
+
+```{r}
+# Compute clonotype counts and percentage
+n_clonotypes = as.data.frame(table(all_tcr$clonotype_id))
+n_clonotypes = compute_percentages(n_clonotypes)
+
+clonotype_summary = all_tcr %>%
+  group_by(clonotype_id) %>%
+  summarise(
+    Treg = any(cell_type == "Treg"),
+    Tfh  = any(cell_type == "Tfh"),
+    Tfr  = any(cell_type == "Tfr"),
+    n_consensus = n_distinct(consensus),
+    n_exact_subclonotypes = n_distinct(exact_subclonotype),
+    .groups = "drop"
+  )
+
+n_clonotypes = n_clonotypes %>%
+  left_join(clonotype_summary, by = "clonotype_id")
+```
+
+
+```{r}
+# Filter shared clonotypes between samples
+shared_clonotypes = n_clonotypes %>%
+  rowwise() %>%
+  filter(sum(c(Treg, Tfh, Tfr)) >= 2) %>%
+  pull(clonotype_id)
+
+shared_tcr = all_tcr %>%
+  filter(clonotype_id %in% shared_clonotypes)
+
+n_shared_clonotypes = n_clonotypes %>%
+  filter(clonotype_id %in% shared_clonotypes) %>%
+  select(clonotype_id, count) %>%
+  rename(total_count = count)
+```
+
+
+```{r}
+cell_type_counts = all_tcr %>%
+  filter(clonotype_id %in% shared_clonotypes) %>%
+  count(clonotype_id, cell_type) %>%
+  pivot_wider(
+    names_from = cell_type,
+    values_from = n,
+    values_fill = 0  
+  )
+
+n_shared_clonotypes = n_shared_clonotypes %>%
+  left_join(cell_type_counts, by = "clonotype_id")
+```
+
+
+```{r}
+# Save
+write.csv(n_clonotypes, row.names = F, file = paste0(path, "all_clonotypes_counts.csv"))
+write.csv(n_shared_clonotypes, row.names = F, file = paste0(path, "shared_clonotypes_counts.csv"))
+```
+
+
+```{r}
+# Load (if necessary)
+all_tcr = read.csv(paste0(path, "all_tcr_clonotypes.csv"))
+n_clonotypes = read.csv(paste0(path, "all_clonotypes_counts.csv"))
+n_shared_clonotypes = read.csv(paste0(path, "shared_clonotypes_counts.csv"))
+```
+
+### All Clonotypes
+
+```{r}
+# Pull clonotype IDs per sample
+treg = n_clonotypes %>%
+  filter(Treg == TRUE) %>%
+  pull(clonotype_id)
+
+tfh = n_clonotypes %>%
+  filter(Tfh == TRUE) %>%
+  pull(clonotype_id)
+
+tfr = n_clonotypes %>%
+  filter(Tfr == TRUE) %>%
+  pull(clonotype_id)
+```
+
+
+```{r}
+# Initialize an empty matrix
+overlap_matrix = matrix(0, nrow = 3, ncol = 3)
+rownames(overlap_matrix) = names(overlap_list)
+colnames(overlap_matrix) = names(overlap_list)
+
+# Fill matrix with pairwise overlaps
+for (i in 1:3) {
+  for (j in 1:3) {
+    overlap_matrix[i, j] = length(intersect(overlap_list[[i]], overlap_list[[j]]))
+  }
+}
+
+# View the matrix
+print(overlap_matrix)
+```
+
+```{r} 
+# Find clonotype overlaps
+overlap_list = list(Treg = treg, Tfh = tfh, Tfr = tfr)
+
+# Plot Venn Diagram for all TCR sequences
+ggVennDiagram(overlap_list, label = "count")
+```
+
+```{r}
+# Plot Venn Diagram
+tcr_pal = c("#D880AC", "#924099", "#64A572")
+
+venn.diagram(
+        x = list(treg, tfr, tfh),
+        category.names = c("Treg" , "Tfr" , "Tfh"),
+        filename = paste0(path, "tcr_venn_diagram.png"),
+        euler.d = TRUE,
+        output=TRUE,
+        
+        # Output features
+        imagetype="png",
+        height = 1000, 
+        width = 1000, 
+        resolution = 600,
+        compression = "lzw",
+        
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = tcr_pal,
+        
+        # Numbers
+        cex = .8,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Set names
+        cat.cex = 0.8,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1
+)
+```
+
+
+```{r fig.width=6, fig.height=6}
+library(magick)
+
+# Read the PNG image using magick
+tcr2 = image_read("C:/Users/maria/Documents/iMM/thesis/analysis/results/tcr_cellranger/tcr_venn_diagram.png")
+
+# Convert the image to a ggplot-like object
+tcr2 = ggdraw() + draw_image(tcr2) + theme(plot.margin = margin(t = 20, r = 20, b = 10, l = 50))
+tcr2 
+```
+
+
+```{r fig.width=10, fig.height=7}
+fit = euler(c(
+  Treg = 2298,
+  Tfr = 424,
+  Tfh = 569,
+  "Treg&Tfr" = 57,
+  "Treg&Tfh" = 6,
+  "Tfr&Tfh" = 7,
+  "Treg&Tfr&Tfh" = 1
+), shape = "ellipse")
+
+plot(fit,
+     fills = list(fill = c("#D880AC", "#924099", "#64A572"), alpha = 0.6),
+     labels = list(font = 2, cex = 2.8),
+     quantities = list(font = 1, cex = 2.3) ,
+     edges = TRUE)
+```
+
+Statistical Tests
+
+```{r}
+contingency_table = table(!n_clonotypes$Tfr, !n_clonotypes$Treg)
+
+# Add row and column names (optional)
+dimnames(contingency_table) = list(
+  Tfr = c("Yes", "No"),
+  Treg = c("Yes", "No")
+)
+
+contingency_table
+
+fisher.test(contingency_table, alternative="greater")
+chisq.test(contingency_table)
+```
+
+
+```{r}
+contingency_table = matrix(c(58, 431,   # Tfr and Treg (in and out)
+                              8, 481),  # Tfr and Tfh (in and out)
+                            nrow = 2,
+                            byrow = TRUE)
+
+# Add row and column names (optional)
+dimnames(contingency_table) = list(
+  Overlap = c("Tfr and Treg", "Tfr and Tfh"),
+  Tfr = c("In", "Out")
+)
+
+contingency_table
+# Run Fisher's Exact Test
+fisher.test(contingency_table, alternative = "greater")
+```
+
+
+
+### Only clonotypes with more than 1 clone
+
+```{r}
+# To consider only clonotypes with more than 1 clone
+n_true_clonotypes = n_clonotypes %>%
+  rowwise() %>%
+  filter(count >= 2) %>%
+  select(clonotype_id, Treg, Tfr, Tfh)
+
+
+# Pull clonotype IDs per sample
+treg = n_true_clonotypes %>% 
+  filter(Treg == TRUE) %>%
+  pull(clonotype_id)
+
+tfh = n_true_clonotypes %>%
+  filter(Tfh == TRUE) %>%
+  pull(clonotype_id)
+
+tfr = n_true_clonotypes %>%
+  filter(Tfr == TRUE) %>%
+  pull(clonotype_id)
+
+# Find clonotype overlaps
+overlap_list = list(Treg = treg, Tfh = tfh, Tfr = tfr)
+
+# Plot Venn Diagram
+ggVennDiagram(overlap_list, label = "count")
+```
+
+
+```{r fig.width=10, fig.height=7}
+# Venn Diagram 
+
+fit = euler(c(
+  Treg = 102,
+  Tfr = 87,
+  Tfh = 188,
+  "Treg&Tfr" = 57,
+  "Treg&Tfh" = 6,
+  "Tfr&Tfh" = 7,
+  "Treg&Tfr&Tfh" = 1))
+
+plot(fit,
+     fills = list(fill = c("#97C9EF", "#CD536F", "#DF9ED4"), alpha = 0.8),
+     labels = list(font = 2, cex = 2.8),
+     quantities = list(font = 1, cex = 2.3) ,
+     edges = TRUE)
+```
+
+
+Statistical Tests
+
+
+```{r}
+contingency_table = matrix(c(58, 94,   # Tfr and Treg (in and out)
+                              8, 144),  # Tfr and Tfh (in and out)
+                            nrow = 2,
+                            byrow = TRUE)
+
+# Add row and column names (optional)
+dimnames(contingency_table) = list(
+  Overlap = c("Tfr and Treg", "Tfr and Tfh"),
+  Tfr = c("In", "Out")
+)
+
+contingency_table
+# Run Fisher's Exact Test
+fisher.test(contingency_table, , alternative = "greater")
+chisq.test(contingency_table)
+```
+
+
+```{r}
+contingency_table = table(!n_true_clonotypes$Tfr, !n_true_clonotypes$Treg)
+
+# Add row and column names (optional)
+dimnames(contingency_table) = list(
+  Tfr = c("Yes", "No"),
+  Treg = c("Yes", "No")
+)
+
+contingency_table
+
+fisher.test(contingency_table, alternative="greater")
+chisq.test(contingency_table)
+```
+
+
+```{r}
+contingency_table = matrix(c(8, 58,   # has Tfr (shared with Tfh or Treg)
+                              194, 108),  # no Tfr (shared with Tfh or Treg)
+                            nrow = 2,
+                            byrow = TRUE)
+
+# Add row and column names (optional)
+dimnames(contingency_table) = list(
+  Tfr = c("Yes", "No"),
+  Clonotypes = c("Tfh", "Treg")
+)
+
+contingency_table
+# Run Fisher's Exact Test
+fisher.test(contingency_table, alternative = "greater")
+```
+
+
+
+
+
+### Only Shared Clonotypes
+
+```{r}
+n_shared_clonotypes = n_clonotypes %>%
+  rowwise() %>%
+  filter(sum(c(Treg, Tfh, Tfr)) >= 2) %>%
+  select(clonotype_id, Treg, Tfr, Tfh)
+
+
+# Pull clonotype IDs per sample
+treg = n_shared_clonotypes %>% 
+  filter(Treg == TRUE) %>%
+  pull(clonotype_id)
+
+tfh = n_shared_clonotypes %>%
+  filter(Tfh == TRUE) %>%
+  pull(clonotype_id)
+
+tfr = n_shared_clonotypes %>%
+  filter(Tfr == TRUE) %>%
+  pull(clonotype_id)
+
+```
+
+
+Repeated Sampling for Statistical Significance
+
+```{r}
+# Pull clonotype IDs per sample
+treg = all_tcr %>%
+  filter(cell_type == "Treg") %>%
+  pull(clonotype_id)
+
+tfh = all_tcr %>%
+  filter(cell_type == "Tfh") %>%
+  pull(clonotype_id)
+
+tfr = all_tcr %>%
+  filter(cell_type == "Tfr") %>%
+  pull(clonotype_id)
+```
+
+
+```{r}
+# Number of iterations and sample size
+n_iter = 1500
+n_sample = 700
+
+# Initialize a data frame to store overlaps
+results = data.frame(
+  iteration = 1:n_iter,
+  overlap_tfr_treg = n_iter,
+  overlap_tfr_tfh = n_iter,
+  overlap_treg_tfh = n_iter
+)
+
+# Loop
+for (i in 1:n_iter) {
+  set.seed(124*i)
+  samp_tfr = sample(tfr, n_sample, replace = FALSE)
+  samp_treg = sample(treg, n_sample, replace = FALSE)
+  samp_tfh = sample(tfh, n_sample, replace = FALSE)
+  
+  # Compute overlaps
+  results$overlap_tfr_treg[i] <- length(intersect(samp_tfr, samp_treg))
+  results$overlap_tfr_tfh[i] <- length(intersect(samp_tfr, samp_tfh))
+  results$overlap_treg_tfh[i] <- length(intersect(samp_treg, samp_tfh))
+}
+
+# View the results
+summary(results[, -1])
+```
+
+```{r fig.width=8, fig.height=6}
+pal = met.brewer("Klimt", 20)
+
+boxplot(results[, -1], main = "Overlap Distributions for 700 cells Sampled per Population
+        with 1500 Permutations", ylab = "Shared TCR clonotypes", 
+        col = c(pal[13],pal[14],pal[15]))
+```
+
+```{r fig.width=10, fig.height=7}
+# Convert data to long format
+df_results = melt(results, id.vars = "iteration")
+
+# Define comparisons (which pairs to test)
+comparisons = list(
+  c("overlap_tfr_treg", "overlap_tfr_tfh"),
+  c("overlap_tfr_treg", "overlap_treg_tfh"),
+  c("overlap_tfr_tfh", "overlap_treg_tfh")
+)
+
+ggplot(df_results, aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c(pal[13],pal[14],pal[15])) +
+  labs(
+    title = "Overlap Distributions for 700 cells Sampled\nper Population with 1500 Permutations",
+    y = "Shared TCR clonotypes", x = ""
+  ) +
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "wilcox.test",
+    label = "p.signif"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 24, face = "bold", 
+                              margin = margin(b=20)),
+    axis.title = element_text(size = 20, face = "bold"),
+    axis.title.y = element_text(margin = margin(r=20)),
+    axis.text = element_text(size = 20),
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8), 
+    axis.line = element_blank(),
+    plot.margin = margin(t=20, r=20, b=20, l=20)
+  )
+
+```
+
+
+
+```{r}
+df_results = melt(results, id.vars = "population")
+
+ggplot(df_results, aes(x = variable, y = value, fill = variable)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c(pal[13],pal[14],pal[15])) +
+  labs(
+    title = "Overlap Distributions for 700 cells Sampled per Population\nwith 1500 Permutations",
+    y = "Shared TCR clonotypes", x = ""
+  ) +
+  stat_compare_means(
+    method = "wilcox.test",
+    label = "p.signif",
+    comparisons = list(c("overlap1", "overlap2"), c("overlap1", "overlap3"),
+                       c("overlap2", "overlap3")) # modify as needed
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+wilcox.test(results$overlap_tfr_treg, results$overlap_tfr_tfh, paired = FALSE,
+            alternative = "greater")
+```
+
+```{r}
+wilcox.test(results$overlap_tfr_treg, results$overlap_treg_tfh, paired = FALSE,
+       alternative = "greater")
+```
+
+
+```{r}
+wilcox.test(results$overlap_tfr_tfh, results$overlap_treg_tfh, paired = FALSE,
+            alternative = "greater")
+```
+
+
+### Sankey Diagrams
+
+```{r}
+# Get overlaps
+only_treg = setdiff(treg, union(tfh, tfr))
+only_tfh = setdiff(tfh, union(treg, tfr))
+only_tfr = setdiff(tfr, union(treg, tfh))
+
+treg_tfh = setdiff(intersect(treg, tfh), tfr)
+treg_tfr = setdiff(intersect(treg, tfr), tfh)
+tfh_tfr = setdiff(intersect(tfh, tfr), treg)
+
+all_three = intersect(intersect(treg, tfh), tfr)
+
+# Define source-target relationships and counts
+links = data.frame(
+  source = c("Treg", "Treg", "Treg", "Tfh", "Tfh", "Tfr", "All"),
+  target = c("Only Treg", "Treg+Tfh", "Treg+Tfr", "Only Tfh",
+             "Tfh+Tfr", "Only Tfr", "Treg+Tfh+Tfr"),
+  value = c(length(only_treg), length(treg_tfh), length(treg_tfr),
+            length(only_tfh), length(tfh_tfr), length(only_tfr),
+            length(all_three))
+)
+
+# Unique nodes
+nodes = data.frame(name = unique(c(links$source, links$target)))
+
+# Convert node names to indices
+links$source_id = match(links$source, nodes$name) - 1
+links$target_id = match(links$target, nodes$name) - 1
+
+sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "source_id", Target = "target_id",
+              Value = "value", NodeID = "name",
+              fontSize = 12, nodeWidth = 30)
+```
+
+
+```{r}
+links = data.frame(
+  source = c("All Clonotypes", "All Clonotypes", "All Clonotypes", 
+             "All Clonotypes", "All Clonotypes", "All Clonotypes", 
+             "All Clonotypes"),
+  target = c("Only Treg", "Only Tfh", "Only Tfr",
+             "Treg+Tfh", "Treg+Tfr", "Tfh+Tfr", "Treg+Tfh+Tfr"),
+  value = c(length(only_treg), length(only_tfh), length(only_tfr),
+            length(treg_tfh), length(treg_tfr), length(tfh_tfr), length(all_three))
+)
+
+# Create list of unique nodes
+nodes = data.frame(name = unique(c(links$source, links$target)))
+
+# Map source/target names to node IDs
+links$source_id = match(links$source, nodes$name) - 1
+links$target_id = match(links$target, nodes$name) - 1
+
+
+sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "source_id", Target = "target_id",
+              Value = "value", NodeID = "name",
+              fontSize = 12, nodeWidth = 30)
+```
+
+
+
+# Figures
+
+```{r fig.width=22, fig.height=16}
+tcr_top = cowplot::plot_grid(ncells, tcr1, ncol = 2,
+                          rel_widths = c(0.7,1.3), labels = c("A","C"),
+                          label_size = 32, label_y = c(1.14,1.14),
+                          label_x = c(-0.05,-0,02)) +
+  theme(plot.margin = margin(t = 10, r = 0, b = 20, l = 0))
+
+
+tcr_bottom = cowplot::plot_grid(nclones, tcr2, ncol = 2,
+                          rel_widths = c(1.2,0.8), labels = c("B","D"),
+                          label_size = 32, label_x = c(-0.03,0)) +
+  theme(plot.margin = margin(t = 50, r = 0, b = 10, l = 0))
+
+tcr_fig = cowplot::plot_grid(tcr_top, tcr_bottom, nrow  = 2,
+                          rel_heights = c(0.9,1.1), labels = c("","")) + 
+  theme(plot.margin = margin(t = 70, r = 20, b = 25, l = 50))
+
+tcr_fig
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/tcr_figure_new.png",
+       tcr_fig, dpi=300, limitsize = FALSE, bg="white")
+```
+
+
+```{r fig.width=24, fig.height=12}
+tcr_left = cowplot::plot_grid(ncells, tcr2, nrow = 2,
+                          rel_widths = c(0.8,1.4), labels = c("B","C"),
+                          label_size = 26, label_x = c(-0.02,0.04),
+                          label_y = c(1.05,1.05)) +
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 50))
+
+tcr_fig = cowplot::plot_grid(tcr1, tcr_left, ncol = 2,
+                          rel_widths = c(1.5,1), labels = c("A",""),
+                          label_size = 26, label_x = c(-0.02,0.04),
+                          label_y = c(1.05,1.05)) + 
+  theme(plot.margin = margin(t = 50, r = 20, b = 25, l = 50))
+
+tcr_fig
+#ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/tcr_figure.png",
+       #tcr_fig, dpi=300, limitsize = FALSE, bg="white")
+```
+
+
+
+# Analyse the Cluster Distribution of the Clonotypes
+
+```{r}
+clonotypes = n_clonotypes %>%
+  filter(count > 1) %>%
+  pull(clonotype_id)
+
+all_clonotypes = all_tcr %>%
+  filter(clonotype_id %in% clonotypes)
+rownames(all_clonotypes) = all_clonotypes$barcode
+```
+
+
+```{r}
+srat = readRDS("C:/Users/maria/Documents/iMM/thesis/analysis/results/integration_final/srat_final_bbknn.RDS")
+```
+
+
+
+```{r}
+srat = AddMetaData(srat, metadata = all_clonotypes["clonotype_id"])
+```
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+col_pal = c("Tfh-Fol" = pal[1], "GC-Tfh" = pal[2], "Treg Naive" = pal[3],
+        "eTreg" = pal[4], "Early Treg" = pal[5], "High-Metabolism Treg_1" = pal[6],
+        "High-Metabolism Treg_2" = pal[7], "Intermediate Treg" = pal[8],
+        "Treg (IFN signaling)" = pal[9], "Il1r2-Treg_1" = pal[10],
+        "Il1r2-Treg_2" = pal[11], "CellCycle" = pal[12], "GC-Tfr" = pal[13],
+        "Tfr-Fol" = pal[14], "APCs" = pal[15])
+
+# Group and calculate percentages
+clono_summary = srat@meta.data %>%
+  filter(final_annot != "APCs") %>%
+  group_by(final_annot) %>%
+  summarise(
+    total_cells = n(),
+    n_clonotype = sum(!is.na(clonotype_id)),
+    pct_clonotype = 100 * n_clonotype / total_cells
+  )
+
+
+tcr3 = ggplot(clono_summary, aes(x = final_annot, y = pct_clonotype, fill = final_annot)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = col_pal) +
+  labs(x = "", y = "Cells in Clonotypes (%)") +
+  coord_flip() +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 22, face = "bold", margin = margin(t = 25)),
+        axis.text.y = element_text(size = 24, face = "bold"),
+        axis.text.x = element_text(size = 20),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 10))
+tcr3
+```
+
+
+```{r}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+clonotype_df = srat@meta.data %>%
+  filter(!is.na(clonotype_id)) %>% 
+  select(final_annot, clonotype_id) %>%
+  group_by(final_annot) %>%
+  summarise(clonotypes = list(unique(clonotype_id)), .groups = "drop") %>%
+  filter(final_annot != "APCs")
+
+cluster_clones = setNames(clonotype_df$clonotypes, clonotype_df$final_annot)
+
+
+cluster_combos = expand.grid(
+  cluster_row = as.character(clonotype_df$final_annot),
+  cluster_col = as.character(clonotype_df$final_annot),
+  stringsAsFactors = FALSE
+) 
+
+
+shared_matrix = cluster_combos %>%
+  rowwise() %>%
+  mutate(
+    clonotypes_row = list(cluster_clones[[cluster_row]]),
+    clonotypes_col = list(cluster_clones[[cluster_col]]),
+    shared = length(intersect(clonotypes_row, clonotypes_col)),
+    total = length(clonotypes_row),
+    pct_shared = 100 * shared / total,
+    union = length(union(clonotypes_row, clonotypes_col)),
+    jaccard = shared / union
+  ) %>%
+  ungroup()
+```
+
+
+```{r fig.width=12, fig.height=8}
+ggplot(shared_matrix, aes(x = cluster_col, y = cluster_row, fill = jaccard)) +
+   geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", jaccard)), size = 6, colour = "black") +
+  scale_fill_gradient(low = "white", high = pal[4]) +
+  labs(
+    fill = "Jaccard",
+    title = "Directional Clonotype Sharing (Row → Column)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r fig.width=14, fig.height=12}
+tcr4 = ggplot(shared_matrix, aes(x = cluster_col, y = cluster_row, fill = jaccard)) +
+   geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.0f", shared)), size = 9, colour = "black") +
+  scale_fill_gradient(low = "white", high = pal[4]) +
+  labs(fill = "Jaccard") +
+  theme_minimal() +
+  theme(legend.title = element_text(face = "bold", size=24, margin = margin(b = 20)),
+        legend.text = element_text(size = 22),
+        legend.key.size = unit(1.5, "lines"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+        axis.text.y = element_text(size = 24),
+        plot.margin = margin(t = 20, r = 10, b = 10, l = 40))
+tcr4
+```
+
+
+```{r fig.width=24, fig.height=8}
+tcr_top = cowplot::plot_grid(tcr1, tcr3, ncol = 2,
+                          rel_widths = c(1.2,0.8), labels = c("A","C"),
+                          label_size = 26, label_x = c(-0.02,0.04),
+                          label_y = c(1.1,1.1)) + 
+  theme(plot.margin = margin(t = 50, r = 20, b = 25, l = 20))
+
+tcr_top
+```
+
+
+```{r fig.width=24, fig.height=12}
+tcr_bottom = cowplot::plot_grid(tcr2, tcr4, ncol = 2,
+                          rel_widths = c(0.7,1.3), labels = c("B","D"),
+                          label_size = 26, label_y = c(0.94,1),
+                          label_x = c(0.03,0.04)) + 
+  theme(plot.margin = margin(t = 25, r = 20, b = 20, l = 20))
+
+tcr_bottom
+```
+
+
+```{r fig.width=24, fig.height=20}
+tcr_fig = cowplot::plot_grid(tcr_top, tcr_bottom, nrow = 2,
+                          rel_heights = c(0.8,1.2), labels = c("","")) +
+  theme(plot.margin = margin(t = 20, r = 20, b = 20, l = 20))
+
+tcr_fig
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/figure_tcr.png",
+       tcr_fig, dpi=300, limitsize = FALSE ,bg="white")
+```
+
+
+```{r fig.width=28, fig.height=24}
+clonotype_df = srat@meta.data %>%
+  filter(!is.na(clonotype_id)) %>% 
+  select(final_annot, clonotype_id, cell_type) %>%
+  group_by(final_annot, cell_type) %>%
+  summarise(clonotypes = list(unique(clonotype_id)), .groups = "drop") %>%
+  filter(final_annot != "APCs") %>%
+  mutate(cluster_label = paste0(cell_type, ": ", final_annot))
+
+
+cluster_clones = setNames(clonotype_df$clonotypes, clonotype_df$cluster_label)
+
+# Expand all combinations of the cluster-celltype combos
+cluster_combos = expand.grid(
+  cluster_row = clonotype_df$cluster_label,
+  cluster_col = clonotype_df$cluster_label,
+  stringsAsFactors = FALSE
+)
+
+# Compute shared clonotypes
+shared_matrix = cluster_combos %>%
+  rowwise() %>%
+  mutate(
+    clonotypes_row = list(cluster_clones[[cluster_row]]),
+    clonotypes_col = list(cluster_clones[[cluster_col]]),
+    shared = length(intersect(clonotypes_row, clonotypes_col)),
+    union = length(union(clonotypes_row, clonotypes_col)),
+    jaccard = shared / union
+  ) %>%
+  ungroup()
+
+label_lookup = clonotype_df %>%
+  select(cluster_label, cell_type, final_annot)
+
+
+shared_matrix = shared_matrix %>%
+  left_join(label_lookup, by = c("cluster_row" = "cluster_label")) %>%
+  rename(cell_type_row = cell_type, final_annot_row = final_annot) %>%
+  left_join(label_lookup, by = c("cluster_col" = "cluster_label")) %>%
+  rename(cell_type_col = cell_type, final_annot_col = final_annot)
+
+
+
+
+ggplot(shared_matrix, aes(x = cluster_col, y = cluster_row, fill = jaccard)) +
+   geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.0f", shared)), size = 9, colour = "black") +
+  scale_fill_gradient(low = "white", high = pal[4]) +
+  labs(fill = "Jaccard") +
+  theme_minimal() +
+  theme(legend.title = element_text(face = "bold", size=24, margin = margin(b = 20)),
+        legend.text = element_text(size = 22),
+        legend.key.size = unit(1.5, "lines"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+        axis.text.y = element_text(size = 24),
+        plot.margin = margin(t = 20, r = 10, b = 10, l = 40))  
+```
+
+
+```{r fig.width=28, fig.height=24}
+ggplot(shared_matrix, aes(x = final_annot_col, y = final_annot_row, fill = jaccard)) +
+   geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.0f", shared)), size = 9, colour = "black") +
+  scale_fill_gradient(low = "white", high = pal[4]) +
+  labs(fill = "Jaccard") +
+  theme_minimal() +
+  theme(legend.title = element_text(face = "bold", size=24, margin = margin(b = 20)),
+        legend.text = element_text(size = 22),
+        legend.key.size = unit(1.5, "lines"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+        axis.text.y = element_text(size = 24),
+        strip.text.x = element_text(size = 28, face = "bold"),
+        strip.text.y = element_text(size = 28, face = "bold"),   
+        plot.margin = margin(t = 20, r = 10, b = 10, l = 40)) +
+  facet_grid(cell_type_row ~ cell_type_col, scales = "free", space = "free") 
+```
+
+
+
+

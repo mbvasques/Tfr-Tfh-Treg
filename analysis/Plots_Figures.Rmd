@@ -1,0 +1,2804 @@
+---
+title: "integration_final"
+author: "mb_vasques"
+date: "2025-07-24"
+output: html_document
+---
+
+```{r}
+# data manipulation
+library(Seurat)
+library(Matrix)
+library(dplyr)
+
+# integreation
+library(harmony)
+
+# clustering
+library(clustree)
+
+# fast DE
+library(presto)
+
+# gene set enrichment
+library(gprofiler2)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+
+# palette
+library(MetBrewer)
+
+
+set.seed(1)
+```
+
+
+# Pre Processing D104T16
+
+```{r}
+srat_filt = readRDS("C:/Users/maria/Documents/iMM/thesis/analysis/results/RDS/D104T16_annot_srat_2.RDS")
+dim(srat_filt)
+```
+
+
+```{r fig.width=8, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "SNN_pca20_res.0.6", 
+        pt.size = 1.2, cols = pal_2) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+```{r}
+annot_df = c(
+  "0" = "0:Treg",
+  "1" = "1:Tfh",
+  "2" = "2:Tfh",
+  "3" = "3:Treg",
+  "4" = "4:Tfh",
+  "5" = "5:Treg"
+)
+
+srat_filt$annot = unname(annot_df[as.character(srat_filt$SNN_pca20_res.0.6)])
+```
+
+
+
+```{r fig.width=7, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "SNN_pca20_res.0.6", 
+        pt.size = 1.2, cols = pal_2, label = T, label.size = 10, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=7, fig.height=6}
+plot1 = DimPlot(srat_filt, reduction = "umap", group.by = "annot", 
+        pt.size = 1.2, cols = pal_2, label = T, label.size = 10, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 22),
+        axis.text = element_text(colour = "black", size = 20))
+
+plot1
+```
+
+
+
+```{r fig.width=24, fig.height=8}
+genes = c("Foxp3","Cxcr5")
+
+vln_plots = lapply(genes, function(gene) {
+  VlnPlot(srat_filt, features=gene, group.by = "SNN_pca20_res.0.6", 
+                    cols = pal_2) +
+  labs(x = "", y = "Expression Level") +
+  theme(plot.title = element_text(face = "bold", size = 28),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18))
+})
+
+wrap_plots(vln_plots, ncol = 2)
+```
+
+
+
+```{r fig.width=8, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "Phase", 
+        pt.size = 1.2, cols = c("#B93961", "#3C4B99", "#95C36E")) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Phase") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=24, fig.height=8}
+VlnPlot(srat_filt, features=c("nCount_RNA","nFeature_RNA"), 
+        group.by = "SNN_pca20_res.0.6", cols = pal_2)
+```
+
+
+
+
+```{r fig.width=24, fig.height=5}
+genes = c("Foxp3", "Cxcr5","Il2ra","Ccr7")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat_filt, features = gene,  order=T, pt.size = 1.4) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 20),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(colour = "black", face = "bold", size = 22),
+          axis.text = element_text(colour = "black", size = 20),
+          plot.margin = margin(t = 20, r = 20, b = 20, l = 20))
+})
+
+plot3 = wrap_plots(feature_plots, ncol = 4)
+plot3
+```
+
+
+```{r fig.width=12, fig.height=7}
+markers = list(
+  "Treg" = list("Foxp3","Il2ra","Tnfrsf18","Ctla4","Icos","Ccr7","Klf2","Sell"),
+  "Tfh" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a")
+)
+
+plot2 = DotPlot(srat_filt, features = markers, assay = "RNA", 
+        group.by = "SNN_pca20_res.0.6", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold",
+                                          margin = margin(t=10,b=10)),
+              legend.title = element_text(size = 22, face = "bold",
+                                          margin = margin(t=10,b=20)),
+              legend.text = element_text(size = 22),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 20, 10, 20)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+
+plot2
+```
+
+
+```{r fig.width=6, fig.height=8}
+cl_use = "SNN_pca20_res.0.6" 
+DotPlot(srat_filt, features = c("Foxp3","Ccr7","Klf2","S1pr1","Selplg","Sell","Smad7","Bcl2","Lef1",
+                                "Lgals1","Ctla4","Tgfb1","Tnfrsf18","Tnfrsf4","Icos",
+                                "Il2ra","Il1r2","Cxcr5","Bcl6","Pdcd1","Sh2d1a","Tigit",
+                                "Birc5","Stmn1","Top2a","Mki67","Cdk1"), 
+        assay = "RNA", 
+        group.by = cl_use) +
+  coord_flip()
+```
+
+
+```{r fig.width=22, fig.height=6}
+supfig2_top = cowplot::plot_grid(plot1, plot2, ncol = 2,
+                          rel_widths = c(0.7,1.2), labels = c("A","B"),
+                          label_size = 32)
+
+supfig2_top
+```
+
+
+
+```{r fig.width=22, fig.height=12}
+supfig2 = cowplot::plot_grid(supfig2_top, plot3, nrow = 2,
+                          rel_heights = c(1.2,0.9), labels = c("","C"),
+                          label_size = 32) +
+  theme(plot.margin = margin(10, 10, 10, 10))
+
+supfig2
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/D104T16_supplementary_new.png",
+       supfig2, units = "px", dpi = 300, bg="white")
+```
+
+
+# Pre Processing D104T11
+
+```{r}
+srat_filt = readRDS("C:/Users/maria/Documents/iMM/thesis/analysis/results/RDS/D104T11_final_srat.RDS")
+dim(srat_filt)
+```
+
+```{r}
+srat_filt@meta.data
+```
+
+
+```{r fig.width=9, fig.height=6}
+pal_2 = met.brewer("Klimt", 8)
+DimPlot(srat_filt, reduction = "umap", group.by = "cluster_annot", 
+        pt.size = 1.2, cols = pal_2) +
+  theme(plot.title = element_blank(),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+```{r fig.width=21, fig.height=8}
+genes = c("Foxp3","Cxcr5")
+
+vln_plots = lapply(genes, function(gene) {
+  VlnPlot(srat_filt, features=gene, group.by = "cell_type", 
+                    cols = pal_2) +
+  labs(x = "", y = "Expression Level") +
+  theme(plot.title = element_text(face = "bold", size = 28),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18))
+})
+
+wrap_plots(vln_plots, ncol = 2)
+```
+
+
+```{r fig.width=18, fig.height=7}
+markers = list(
+  "Treg" = list("Foxp3","Il2ra","Tnfrsf18","Ctla4","Icos","Ccr7","Klf2","Sell"),
+  "Tfh" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a"),
+  "CellCycle" = list("Birc5","Stmn1","Top2a","Mki67","Cdk1")
+)
+
+DotPlot(srat_filt, features = markers, assay = "RNA", 
+        group.by = "cell_type", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold"),
+              legend.title = element_text(size = 18, face = "bold"),
+              legend.text = element_text(size = 18),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 20, 10, 20)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+```
+
+
+
+```{r fig.width=7, fig.height=6}
+plt1 = DimPlot(srat_filt, reduction = "umap", group.by = "SNN_pca25_res.0.3", 
+        pt.size = 1.2, cols = pal_2, 
+        label = T, label.size = 12, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 22),
+        axis.text = element_text(colour = "black", size = 20),
+        plot.margin = margin(l= 20, r=50))
+plt1
+```
+
+
+```{r fig.width=8, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "Phase", 
+        pt.size = 1.2, cols = c("#B93961", "#3C4B99", "#95C36E")) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Phase") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=25, fig.height=8}
+VlnPlot(srat_filt, features=c("S.Score","G2M.Score"), 
+        group.by = "SNN_pca25_res.0.3", cols = pal_2)
+```
+
+
+```{r fig.width=25, fig.height=8}
+VlnPlot(srat_filt, features=c("nCount_RNA","nFeature_RNA"), 
+        group.by = "SNN_pca25_res.0.3", cols = pal_2)
+```
+
+
+```{r fig.width=25, fig.height=8}
+genes = c("Foxp3","Cxcr5")
+
+vln_plots = lapply(genes, function(gene) {
+  VlnPlot(srat_filt, features=gene, group.by = "SNN_pca25_res.0.3", 
+                    cols = pal_2) +
+  labs(x = "", y = "Expression Level") +
+  theme(plot.title = element_text(face = "bold", size = 28),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18))
+})
+
+wrap_plots(vln_plots, ncol = 2)
+```
+
+
+```{r fig.width=18, fig.height=7}
+markers = list(
+  "Treg" = list("Foxp3","Il2ra","Tnfrsf18","Ctla4","Icos","Ccr7","Klf2","Sell"),
+  "Tfh" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a"),
+  "CellCycle" = list("Birc5","Stmn1","Top2a","Mki67","Cdk1")
+)
+
+dot1 = DotPlot(srat_filt, features = markers, assay = "RNA", 
+        group.by = "SNN_pca25_res.0.3", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold",
+                                          margin = margin(t=10,b=10)),
+              legend.title = element_text(size = 22, face = "bold",
+                                          margin = margin(t=10,b=20)),
+              legend.text = element_text(size = 22),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 20, 10, 20)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+dot1
+```
+
+
+```{r}
+annot_df = c(
+  "0" = "0:Tfh",
+  "1" = "1:Treg",
+  "2" = "2:Treg",
+  "3" = "3:Tfh",
+  "4" = "4:Mix",
+  "5" = "5:Treg",
+  "6" = "6:Mix",
+  "7" = "7: Mix"
+)
+
+srat_filt$initial_annot = unname(annot_df[as.character(srat_filt$SNN_pca25_res.0.3)])
+srat_filt$annot = unname(annot_df[as.character(srat_filt$SNN_pca25_res.0.3)])
+```
+
+
+```{r fig.width=7, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "initial_annot", 
+        pt.size = 1.2, cols = pal_2, 
+        label = T, label.size = 10, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=9, fig.height=6}
+DimPlot(srat_filt, reduction = "umap", group.by = "cell_type", 
+        pt.size = 1.2, cols = pal_2) +
+  theme(plot.title = element_blank(),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+
+```{r}
+srat_subset = readRDS("C:/Users/maria/Documents/iMM/thesis/data/RDS/initial_analysis/D104T11_subset.RDS")
+```
+
+
+
+```{r fig.width=7, fig.height=6}
+DimPlot(srat_subset, reduction = "umap", group.by = "SNN_pca25_res.0.3", 
+        pt.size = 1.2, cols = pal_2, 
+        label = T, label.size = 10, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=7, fig.height=6}
+plt2 = DimPlot(srat_subset, reduction = "umap", group.by = "SNN_pca30_res.0.7", 
+        pt.size = 1.6, cols = pal_2, 
+        label = T, label.size = 12, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 22),
+        axis.text = element_text(colour = "black", size = 20),
+        plot.margin = margin(l= 20, r=50))
+plt2
+```
+
+
+```{r fig.width=12, fig.height=7}
+markers = list(
+  "Treg" = list("Foxp3","Il2ra","Tnfrsf18","Ctla4","Icos","Ccr7","Klf2","Sell"),
+  "Tfh" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a")
+)
+
+dot2 = DotPlot(srat_subset, features = markers, assay = "RNA", 
+        group.by = "SNN_pca30_res.0.7", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold",
+                                          margin = margin(t=10,b=10)),
+              legend.title = element_text(size = 22, face = "bold",
+                                           margin = margin(t=10,b=20)),
+              legend.text = element_text(size = 22),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 20, 10, 20)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+dot2 
+```
+
+
+
+```{r}
+# 1. Extract the barcodes from srat_subset where resolution cluster == 4
+subset_barcodes = colnames(srat_subset)[srat_subset$SNN_pca30_res.0.7 == 4]
+
+# 2. Extract the barcodes from srat_filt where cell_type == "Treg + Tfr"
+mixed_barcodes = colnames(srat_filt)[srat_filt$cell_type == "Treg + Tfh"]
+
+# 3. Check if all subset barcodes are in the filtered barcodes
+all(subset_barcodes %in% mixed_barcodes)
+```
+
+
+```{r}
+sub_annot_df = c(
+  "0" = "3:Tfh",
+  "1" = "5:Treg",
+  "2" = "4:Treg",
+  "3" = "8:Tfh",
+  "4" = "9:Mix"
+)
+
+srat_subset$annot = unname(sub_annot_df[as.character(srat_subset$SNN_pca30_res.0.7)])
+```
+
+
+```{r fig.width=7, fig.height=6}
+DimPlot(srat_subset, reduction = "umap", group.by = "annot", 
+        pt.size = 1.2, cols = pal_2, 
+        label = T, label.size = 10, label.box = T) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+```{r}
+# Assign the annotation from the subset
+srat_filt@meta.data[rownames(srat_subset@meta.data), "annot"] = srat_subset$annot
+```
+
+
+```{r fig.width=10, fig.height=6}
+plt3 = DimPlot(srat_filt, reduction = "umap", group.by = "annot", 
+        pt.size = 1.2, cols = met.brewer("Klimt", 10), label = F) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.text = element_text(size = 28, face = "bold", margin = margin(b=10)),
+        axis.title = element_text(colour = "black", face = "bold", size = 22),
+        axis.text = element_text(colour = "black", size = 20),
+        plot.margin = margin(l= 20, r=50))
+
+plt3
+```
+
+```{r fig.width=18, fig.height=6}
+plt4 = DimPlot(srat_filt, reduction = "umap", group.by = "annot", 
+        split.by = "cell_type" , pt.size = 1.2, cols = met.brewer("Klimt", 10)) +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        strip.text.x = element_text(size = 28, face = "bold"),
+        axis.title = element_text(colour = "black", face = "bold", size = 22),
+        axis.text = element_text(colour = "black", size = 20))
+
+plt4
+```
+
+```{r fig.width=25, fig.height=20}
+fig_top = cowplot::plot_grid(plt1, dot1, ncol = 2,
+                          rel_widths = c(0.6,1.4), labels = c("A","B"),
+                          label_size = 32) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
+
+fig_middle = cowplot::plot_grid(plt2, dot2, ncol = 2,
+                          rel_widths = c(0.6,1.4), labels = c("C","D"),
+                          label_size = 32) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 20, l = 10))
+
+fig_bottom = cowplot::plot_grid(plt3, plt4, ncol = 2,
+                          rel_widths = c(0.8,1.2), labels = c("D","E"),
+                          label_size = 32) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 10))
+
+fig = cowplot::plot_grid(fig_top, fig_middle, fig_bottom, nrow = 3,
+                          rel_heights = c(1,1,1), labels = c("","","")) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 10))
+
+fig
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/D104T11_supplementary.png",
+       fig, dpi = 300, bg="white")
+```
+
+
+
+
+# Quality Control
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+srat_filt = readRDS(paste0(dir_data,"data/RDS/D104T11_raw_srat.RDS"))
+```
+
+```{r}
+srat_filt$orig.ident = "D104T11"
+```
+
+```{r}
+srat_filt = PercentageFeatureSet(srat_filt, col.name = "percent.mt", assay = "RNA", pattern = "^mt-") 
+srat_filt = PercentageFeatureSet(srat_filt, col.name = "percent.rb", assay = "RNA", pattern = "^Rp(s|l)") 
+```
+
+```{r fig.width=15, fig.height=7}
+
+qc_theme = 
+  theme(legend.title = element_blank(),
+        legend.position = "none",
+        plot.title = element_blank(),
+        axis.text = element_text(colour = "black", size = 14),
+        axis.title = element_text(face = "bold", size = 18))
+
+
+plot1 = FeatureScatter(srat_filt, feature1 = "nCount_RNA", feature2 = "percent.mt", 
+                       cols = "#E97132") + qc_theme 
+  
+plot2 = FeatureScatter(srat_filt, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+                       cols = "#E97132") + qc_theme 
+
+qc_plot = plot1 + plot2 +
+  plot_annotation(
+    title = "GFP_d6_Mix (Treg + Tfh)",
+    theme = theme(
+      plot.title = element_text(size = 24, face = "bold", hjust = 0.5))
+    )
+
+qc_plot
+```
+
+
+```{r}
+srat_filt@meta.data
+```
+
+
+```{r}
+VlnPlot(srat_filt, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), layer="counts", ncol = 3)
+```
+
+
+
+```{r}
+create_obj = function(dir, sample_id){
+  srat = readRDS(file = paste0(dir, sample_id, "_raw_srat.RDS"))
+  
+  srat = PercentageFeatureSet(srat, col.name = "percent.mt", assay = "RNA", pattern = "^mt-") 
+  srat = PercentageFeatureSet(srat, col.name = "percent.rb", assay = "RNA", pattern = "^Rp(s|l)") 
+  
+  srat$orig.ident = sample_id
+  
+  return(srat)
+}
+```
+
+
+```{r}
+sample_files = c("D104T11","D104T13","D104T14","D104T15",
+              "D104T16","hCD2_d0","hCD2_d6","hCD2_d11")
+
+dir = "/Users/maria/Documents/iMM/thesis/data/RDS/"
+```
+
+
+```{r}
+srat_lt = lapply(sample_files, function(s) {
+  create_obj(dir, s)
+})
+```
+
+
+```{r}
+for (i in seq_along(srat_lt)) {
+  print(unique(srat_lt[[i]]$orig.ident))
+}
+```
+
+```{r}
+merged = merge(x = srat_lt[[1]], y = srat_lt[-1])
+```
+
+```{r}
+unique(merged$orig.ident)
+```
+
+```{r}
+merged[["RNA"]] = JoinLayers(merged[["RNA"]])
+```
+
+
+```{r fig.width=30, fig.height=10}
+Idents(merged) = "orig.ident"
+VlnPlot(merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        layer="counts", split.by = "orig.ident", ncol = 3, split.plot = T,
+        cols=c("#E97132", "#E97132", "#E97132", "#E97132", "#E97132",
+               "#990033", "#990033", "#990033"))
+```
+
+
+```{r fig.width=30, fig.height=10}
+qc_parameters = c("nFeature_RNA", "nCount_RNA", "percent.mt")
+
+plots = lapply(qc_parameters, function(param) {
+  VlnPlot(merged, features = param, pt.size = 0.5, layer="counts",
+          cols = c("#E97132", "#E97132", "#E97132", "#E97132", "#E97132",
+               "#990033", "#990033", "#990033")) + 
+    geom_jitter(width = 0.4, size = 0.7, alpha = 1.2) + 
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold", size = 32),
+          axis.title = element_blank(),
+          axis.text.y = element_text(size = 24),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 24))
+})
+
+
+
+combined_plot = wrap_plots(plots, ncol = 3)
+combined_plot
+```
+
+
+```{r fig.width=10, fig.height=7}
+merged$orig.ident = factor(merged$orig.ident, levels = c("D104T11","D104T13","D104T14","D104T15",
+              "D104T16","hCD2_d0","hCD2_d6","hCD2_d11"))
+
+experiment_pal = c(
+  "D104T11" = "#E97132",
+  "D104T13" = "#E97132", 
+  "D104T14" = "#E97132",
+  "D104T15" = "#E97132", 
+  "D104T16" = "#E97132",
+  "hCD2_d0" = "#990033", 
+  "hCD2_d6" = "#990033", 
+  "hCD2_d11" = "#990033")
+
+# Step 1: Compute percentages
+counts_df = merged@meta.data %>%
+  group_by(orig.ident) %>%
+  summarise(count = n(), .groups = "drop") 
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = orig.ident, y = count, fill = orig.ident)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ggtitle("Number of Cells per Sample") +
+  theme_bw() +
+  theme(legend.position = "none",
+    plot.title = element_text(face = "bold", size = 24),
+    axis.title = element_blank(),
+    axis.text.y = element_text(colour = "black", size = 14),
+    axis.text.x = element_text(colour = "black", angle = 45, hjust = 1, size = 16)) +
+  scale_fill_manual(values = experiment_pal)
+```
+
+
+
+
+
+
+
+```{r}
+# Load Anndata data into Seurat object
+
+# load metadata
+metadata = read.csv("analysis/results/integration_final/anndata_data/obs_metadata.csv", row.names = 1)
+
+# load raw counts
+counts = t(readMM("analysis/results/integration_final/anndata_data/counts.mtx"))
+features = read.csv("analysis/results/integration_final/anndata_data/var_names.csv", 
+                    stringsAsFactors = FALSE)[[1]]
+rownames(counts) = features
+colnames(counts) = rownames(metadata)
+
+# 3. Create Seurat object
+srat = CreateSeuratObject(counts = counts, meta.data = metadata)
+```
+
+
+```{r}
+srat
+```
+
+
+```{r}
+# load normalized data
+normalized_data = t(readMM("analysis/results/integration_final/anndata_data/data.mtx"))
+srat@assays$RNA$data = normalized_data
+```
+
+
+```{r}
+# load scaled data
+scaled_data = t(as.matrix(read.csv("analysis/results/integration_final/anndata_data/scale_data.csv",
+                                   row.names = 1)))
+srat@assays$RNA$scale.data = scaled_data
+```
+
+
+```{r}
+# load PCA components
+pca = as.matrix(read.csv("analysis/results/integration_final/anndata_data/pca.csv", row.names = 1))
+colnames(pca) = paste0("PC_", 1:ncol(pca))
+srat@reductions$pca = CreateDimReducObject(embeddings = pca, key = "PC_", assay = "RNA")
+
+# load UMAP components
+umap = as.matrix(read.csv("analysis/results/integration_final/anndata_data/umap.csv", row.names = 1))
+srat@reductions$umap = CreateDimReducObject(embeddings = umap, key = "umap_", assay = "RNA")
+```
+
+
+```{r}
+saveRDS(srat, file="analysis/results/integration_final/srat_final_bbknn.RDS")
+```
+
+
+```{r}
+srat = readRDS("C:/Users/maria/Documents/iMM/thesis/analysis/results/integration_final/srat_final_bbknn.RDS")
+```
+
+
+```{r}
+unique(srat$orig.ident)
+```
+
+
+```{r fig.width=10, fig.height=7}
+srat$orig.ident = factor(srat$orig.ident, levels = c("D104T11","D104T13","D104T14","D104T15",
+              "D104T16","hCD2_d0_Treg","hCD2_d6_Tfr","hCD2_d11_Tfr"))
+
+experiment_pal = c(
+  "D104T11" = "#E97132",
+  "D104T13" = "#E97132", 
+  "D104T14" = "#E97132",
+  "D104T15" = "#E97132", 
+  "D104T16" = "#E97132",
+  "hCD2_d0_Treg" = "#990033", 
+  "hCD2_d6_Tfr" = "#990033", 
+  "hCD2_d11_Tfr" = "#990033")
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(orig.ident) %>%
+  summarise(count = n(), .groups = "drop") 
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = orig.ident, y = count, fill = orig.ident)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ggtitle("Number of Cells per Sample") +
+  theme_bw() +
+  theme(legend.position = "none",
+    plot.title = element_text(face = "bold", size = 24),
+    axis.title = element_blank(),
+    axis.text.y = element_text(colour = "black", size = 14),
+    axis.text.x = element_text(colour = "black", angle = 45, hjust = 1, size = 16)) +
+  scale_fill_manual(values = experiment_pal)
+```
+
+
+```{r}
+pal = met.brewer("Klimt", 17)
+DimPlot(srat, reduction = "umap", group.by = "leiden_res_0.9", 
+        label = T, label.size = 7, cols = pal)
+```
+
+```{r fig.width=8, fig.height=6}
+exp_plot = DimPlot(srat, group.by = "experiment", pt.size = 0.9, 
+        label.size = 12,  cols = c("#E97132", "#990033"), shuffle = T, seed=8) +
+  labs(color = "Experiment") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 10, r = 20, b = 20, l = 10))
+
+exp_plot
+```
+
+```{r fig.width=8, fig.height=6}
+phase_plot = DimPlot(srat, group.by = "Phase", pt.size = 0.9, 
+        label.size = 12,  cols = c("#B93961", "#3C4B99", "#95C36E")) +
+  labs(color = "Phase") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 10, r = 10, b = 20, l = 20))
+
+phase_plot
+```
+
+
+```{r}
+fannot_df = c(
+  "0" = "Tfh-Fol",
+  "1" = "High-Metabolism Treg_2",
+  "2" = "Il1r2-Treg_2",
+  "3" = "Tfr-Fol",
+  "4" = "Early Treg",
+  "5" = "Il1r2-Treg_1",
+  "6" = "High-Metabolism Treg_1",
+  "7" = "Intermediate Treg",
+  "8" = "Treg Naive",
+  "9" = "GC-Tfh",
+  "10" = "eTreg",
+  "11" = "Treg (IFN signaling)",
+  "12" = "Treg Naive",
+  "13" = "CellCycle",
+  "14" = "CellCycle",
+  "15" = "GC-Tfr",
+  "16" = "APCs"
+)
+
+srat$final_annot = unname(fannot_df[as.character(srat$leiden_res_0.9)])
+```
+
+
+```{r fig.width=12, fig.height=8}
+VlnPlot(srat, features=c("S.Score"), group.by = "final_annot", cols = pal)
+```
+
+
+```{r fig.width=12, fig.height=8}
+VlnPlot(srat, features=c("G2M.Score"), group.by = "final_annot", cols = pal)
+```
+
+
+
+```{r fig.width=16, fig.height=6}
+DimPlot(srat, group.by = "final_annot", split.by = "experiment" , pt.size = 1.2, 
+        label.size = 12,  cols = pal) +
+  labs(color = "Cluster") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        strip.text = element_text(size = 28, face = "bold"),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+```{r fig.width=12, fig.height=6}
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        pt.size = 1.2, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+col_pal = c("Tfh-Fol" = pal[1], "GC-Tfh" = pal[2], "Treg Naive" = pal[3],
+        "eTreg" = pal[4], "Early Treg" = pal[5], "High-Metabolism Treg_1" = pal[6],
+        "High-Metabolism Treg_2" = pal[7], "Intermediate Treg" = pal[8],
+        "Treg (IFN signaling)" = pal[9], "Il1r2-Treg_1" = pal[10],
+        "Il1r2-Treg_2" = pal[11], "CellCycle" = pal[12], "GC-Tfr" = pal[13],
+        "Tfr-Fol" = pal[14], "APCs" = pal[15])
+
+
+nfeat_plot = VlnPlot(srat, features=c("nFeature_RNA"), 
+                      group.by = "final_annot", cols = col_pal) +
+  labs(y = "nFeature", color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 20))
+
+nfeat_plot
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/nfeature_supplementary.png",
+       nfeat_plot, dpi = 300, bg="white")
+```
+
+
+```{r fig.width=12, fig.height=8}
+VlnPlot(srat, features=c("nCount_RNA"), 
+                      group.by = "final_annot", cols = col_pal) +
+  labs(y = "Ribossomal Genes (%)", color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 20))
+```
+
+
+
+```{r fig.width=16, fig.height=12}
+FeaturePlot(srat, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "percent.rb"), 
+            order=T, pt.size = 0.9, ncol = 2)
+```
+
+
+
+
+```{r fig.width=16, fig.height=12}
+DimPlot(srat, group.by = "final_annot", split.by = "cell_type",
+        pt.size = 1.2, label.size = 12, ncol = 2, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Sorting") +
+  labs(color = "Cluster") +
+  theme(plot.title = element_text(size = 42, face = "bold"),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=32, fig.height=8}
+DimPlot(srat, group.by = "final_annot", split.by = "cell_type",
+        pt.size = 1.2, label.size = 12, ncol = 4, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Sorting") +
+  theme(plot.title = element_text(size = 42, face = "bold", hjust = 0.38),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=16, fig.height=12}
+DimPlot(srat, group.by = "day", split.by = "cell_type",
+        pt.size = 1.2, label.size = 12, ncol = 2, cols = c(pal[7], pal[1], pal[4])) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Sorting") +
+  labs(color = "Cluster") +
+  theme(plot.title = element_text(size = 42, face = "bold"),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=22, fig.height=12}
+DimPlot(srat, group.by = "final_annot", split.by = "sample_type",
+        pt.size = 1.2, label.size = 12, ncol = 3, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Sample Type") +
+  theme(plot.title = element_text(size = 42, face = "bold", hjust = 0.5),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=22, fig.height=12}
+DimPlot(srat, group.by = "final_annot", split.by = "orig.ident",
+        pt.size = 1.2, label.size = 12, ncol = 3, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Sample Type") +
+  theme(plot.title = element_text(size = 42, face = "bold", hjust = 0.5),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+```{r fig.width=22, fig.height=8}
+DimPlot(srat, group.by = "final_annot", split.by = "day", pt.size = 1.2, 
+        label.size = 12, ncol = 3, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Timepoint (Day)") +
+  labs(color = "Cluster") +
+  theme(plot.title = element_text(size = 42, face = "bold"),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r fig.width=22, fig.height=15}
+pal = met.brewer("Klimt", 17)
+DimPlot(srat, group.by = "final_annot", split.by = "SNN_harmony20_res.0.3", pt.size = 1.2, 
+        label.size = 12, ncol = 3, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  ggtitle("Harmony") +
+  labs(color = "Cluster") +
+  theme(plot.title = element_text(size = 42, face = "bold"),
+        strip.text = element_text(size = 28, face = "bold"),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+
+```{r fig.width=8, fig.height=6}
+sort_plot = DimPlot(srat, group.by = "cell_type", pt.size = 0.9, 
+        label.size = 12,  cols = c(pal[1], pal[4], "#97C9EF", pal[9]),
+        shuffle = T) +
+  labs(color = "Sorting") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(size = 24, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 10))
+
+sort_plot
+```
+
+
+```{r fig.width=8, fig.height=6}
+time_plot = DimPlot(srat, group.by = "day", pt.size = 0.9, 
+        label.size = 12,  cols = c(pal[7], pal[1], pal[4])) +
+  labs(color = "Day") +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(size = 24, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 20, r = 10, b = 10, l = 20))
+
+time_plot
+```
+
+
+```{r}
+library(magick)
+
+# Read the PNG image using magick
+design = image_read("C:/Users/maria/Documents/iMM/thesis/experimental_design_mRNA.png")
+
+# Convert the image to a ggplot-like object
+design = ggdraw() + draw_image(design) + theme(plot.margin = margin(t = 5, r = 5, b = 20, l = 5))
+design 
+```
+
+
+
+```{r fig.width=18, fig.height=14}
+fig1_top = cowplot::plot_grid(exp_plot, phase_plot, ncol = 2,
+                          rel_widths = c(1.1,1), labels = c("B","C"),
+                          label_size = 26)
+
+fig1_bottom = cowplot::plot_grid(sort_plot, time_plot, ncol = 2,
+                          rel_widths = c(1.1,1), labels = c("D","E"),
+                          label_size = 26)
+
+fig1 = cowplot::plot_grid(design, fig1_top, fig1_bottom, nrow = 3,
+                          rel_heights = c(0.9,1.1,1.1), labels = c("A","",""),
+                          label_size = 26, label_x = c(0.1, 0, 0)) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 10))
+
+fig1
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/figure1.png",
+       fig1, dpi = 300, bg="white")
+```
+
+
+
+```{r fig.width=22, fig.height=15}
+DimPlot(srat, group.by = "final_annot", split.by = "sample_type", pt.size = 1.2, 
+        label.size = 12, ncol = 3, cols = pal) 
+```
+
+
+
+
+```{r fig.width=10, fig.height=5}
+VlnPlot(srat, features=c("Foxp3","Cxcr5"), group.by = "final_annot",  ncol = 2)
+```
+
+
+
+```{r fig.width=22, fig.height=16}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Treg Naive", 
+                                     "eTreg", "Early Treg", 
+                                     "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2",
+                                     "Intermediate Treg", "Treg (IFN signaling)",
+                                     "Il1r2-Treg_1","Il1r2-Treg_2", 
+                                     "CellCycle", "GC-Tfr", "Tfr-Fol","APCs"))
+
+# Get UMAP coordinates and metadata
+umap_data = Embeddings(srat, reduction = "umap") %>% as.data.frame()
+umap_data$label = srat$final_annot
+
+# Get cluster centroids for labels
+label_data = aggregate(. ~ label, data = umap_data, FUN = mean)
+
+
+pal = met.brewer("Klimt", 20)
+
+f1pl1 = DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+                pt.size = 2.4, cols = pal, label = FALSE) +
+  ggrepel::geom_label_repel(data = label_data, aes(x = umap_1, y = umap_2, label = label),
+  size = 12, box.padding = 0.2, label.size = 0.5, fill = "white", color = "black",
+  segment.color = "black", segment.size = 0.8, max.overlaps = 10, label.padding = 0.7) +
+  coord_cartesian(clip = "off") +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title = element_text(colour = "black", face = "bold", size = 28),
+        axis.text = element_text(colour = "black", size = 24),
+        plot.margin = margin(t = 10, r = 50, b = 10, l = 10))
+
+f1pl1
+```
+
+
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+col_pal = c("Tfh-Fol" = pal[1], "GC-Tfh" = pal[2], "Treg Naive" = pal[3],
+        "eTreg" = pal[4], "Early Treg" = pal[5], "High-Metabolism Treg_1" = pal[6],
+        "High-Metabolism Treg_2" = pal[7], "Intermediate Treg" = pal[8],
+        "Treg (IFN signaling)" = pal[9], "Il1r2-Treg_1" = pal[10],
+        "Il1r2-Treg_2" = pal[11], "CellCycle" = pal[12], "GC-Tfr" = pal[13],
+        "Tfr-Fol" = pal[14], "APCs" = pal[15])
+
+
+pct_rib_plot = VlnPlot(srat, features=c("percent.rb"), 
+                       group.by = "final_annot", cols = col_pal) +
+  labs(y = "Ribossomal Genes (%)", color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 18),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 20))
+
+pct_rib_plot
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/ribossomal_supplementary.png",
+       pct_rib_plot, dpi = 300, bg="white")
+```
+
+
+
+```{r fig.width=12, fig.height=8}
+VlnPlot(srat, features=c("nFeature_RNA"), group.by = "orig.ident", cols = pal)
+```
+
+
+
+```{r fig.width=12, fig.height=6}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Treg Naive", 
+                                     "eTreg", "Early Treg", 
+                                     "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2",
+                                     "Intermediate Treg", "Treg (IFN signaling)", 
+                                     "Il1r2-Treg_1","Il1r2-Treg_2", 
+                                     "CellCycle", "GC-Tfr", "Tfr-Fol", "APCs"))
+
+
+pal = met.brewer("Klimt", 20)
+
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        pt.size = 1.2, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+```{r fig.width=32, fig.height=12}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+markers = list(
+  "Follicular" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a","Il1r2"),
+  "Treg" = list("Il2ra","Foxp3", "Ctla4"),
+  "Treg Activation" = list("Nr4a1","Cd69","Tnfrsf18","Tnfrsf9","Tnfrsf4","Icos",
+                           "Ikzf2","Irf4"),
+  "Treg Effector" = list("Klrg1","Gzmb","Il10","Ebi3","Itgae","Ccr2"),
+  "Treg Naive" = list("Ccr7","Sell","Klf2","S1pr1"),
+  "IFN-signaling" = list("Stat1", "Irf1", "Irf7", "Ifit1", "Ifit3"),
+  "CellCycle" = list("Birc5","Stmn1","Top2a","Mki67","Cdk1"),
+  "APCs" = list("Lyz2","Tyrobp","Fcer1g","Cxcl9","Ccl12")
+)
+
+f1pl2 = DotPlot(srat, features = markers, assay = "RNA", group.by = "final_annot", dot.scale = 15) +
+        theme(strip.text.x = element_text(size = 28, face = "bold"),
+              legend.title = element_text(size = 26, face = "bold"),
+              legend.text = element_text(size = 26),
+              legend.key.size = unit(2, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 28),
+              axis.text.y = element_text(size = 28),
+              plot.margin = margin(50, 10, 10, 10)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+
+f1pl2
+```
+
+
+```{r fig.width=22, fig.height=12}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+
+markers = list(
+  "IFN-signaling" = list("Stat1", "Irf1", "Irf7", "Ifit1", "Ifit3"),
+  "CellCycle" = list("Birc5","Stmn1","Top2a","Mki67","Cdk1"),
+  "APCs" = list("Lyz2","Tyrobp","Fcer1g","Cxcl9","Ccl12")
+)
+
+DotPlot(srat, features = markers, assay = "RNA", group.by = "final_annot", dot.scale = 15) +
+        theme(strip.text.x = element_text(size = 28, face = "bold"),
+              legend.title = element_text(size = 26, face = "bold"),
+              legend.text = element_text(size = 26),
+              legend.key.size = unit(2, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 28),
+              axis.text.y = element_text(size = 28),
+              plot.margin = margin(50, 10, 10, 10)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+```
+
+
+```{r fig.width=27, fig.height=12}
+markers = list(
+  "Follicular" = list("Cxcr5","Bcl6","Pdcd1","Sh2d1a","Tigit","Il4","Il21",
+                      "Il1r1","Il1r2","Tox","Gpr183","Izumo1r","Tnfrsf9"),
+  #"Type2" = list("Cebpa","Hif1a","Cd200","Gata3"),
+  "Regulatory" = list("Il2ra","Foxp3","Tnfrsf18","Tnfrsf4","Ctla4","Cd274","Lag3","Irf4",
+                      "Gata1","Ly6c1","Egr3","Il18r1","Gas5","Socs3","Lgals1"),
+  "Treg Effector" = list("Csrnp1","Nr4a1","Icos", "Gzmb", "Ccr2","Ccr6",
+                         "Il10","Ebi3","Itgae","Ccr4","Ccr8","Entpd1","Cd69","Klrg1"),
+  "Treg Naive" = list("Klf2", "Sell", "S1pr1", "Ccr7"),
+  "IFN-signaling" = list("Stat1", "Irf1", "Irf7", "Ifit1", "Ifit3","Ifitm3","Socs1","Stat3","Stat2","Stat5a")
+  #"Metabolism" = list("Eef2","Eef1a1","Eif3f","Limd2","Pfn1","Tmsb10"),
+  #"CellCycle" = list("Birc5","Stmn1","Top2a","Mki67","Cdk1"),
+  #"APCs" = list("Adgre1","H2-Aa","H2-Eb1")
+)
+
+DotPlot(srat, features = markers, assay = "RNA", group.by = "final_annot", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold"),
+              legend.title = element_text(size = 18, face = "bold"),
+              legend.text = element_text(size = 18),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 5, 10, 5)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+```
+
+```{r fig.width=27, fig.height=12}
+markers = list(
+  "IFN_1" = c("Isg15","Mx1","Ifi44","Ifi44l","Ifit1","Oas1a",
+              "Ifit3","Rsad2","Stat2","Irf7","Usp18","Irf9","Tbx21","Tigit","Cxcr3"),
+  "IFN_2" = c("Cxcl9","Cxcl10","Gbp2","Gbp3","Irf1","Ido1","Socs1",
+              "H2-Ab1", "H2-Aa")
+)
+
+DotPlot(srat, features = markers, assay = "RNA", group.by = "final_annot", dot.scale = 14) +
+        theme(strip.text.x = element_text(size = 24, face = "bold"),
+              legend.title = element_text(size = 18, face = "bold"),
+              legend.text = element_text(size = 18),
+              legend.key.size = unit(1.5, "lines"),  
+              axis.title = element_blank(),
+              axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+              axis.text.y = element_text(size = 24),
+              plot.margin = margin(20, 5, 10, 5)) +
+        scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+```
+
+
+
+
+```{r}
+#effector : "Klrg1","Cxcr3","Ccr4","Ccr8","Ccr5"
+```
+
+
+
+
+```{r fig.width=10, fig.height=5}
+VlnPlot(srat, features=c("Foxp3","Cxcr5"), group.by = "final_annot",  ncol = 2)
+```
+
+
+```{r fig.width=16, fig.height=28}
+genes = c("Foxp3", "Cxcr5", "Pdcd1", "Bcl6", "Ccr7", "Klf2",
+          "Gzmb", "Ccr2", "Il2ra", "Il1r2")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 2)
+```
+
+
+```{r fig.width=32, fig.height=6}
+genes = c("Foxp3", "Cxcr5", "Il2ra", "Il1r2")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 4)
+```
+
+```{r fig.width=24, fig.height=12}
+genes = c("Foxp3", "Cxcr5", "S1pr2","Il2ra", "Il1r2", "Ctla4")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 3)
+```
+
+
+```{r fig.width=12, fig.height=8}
+srat$day = factor(srat$day, levels = c("0", "6", "11"))
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(final_annot, day) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(final_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = final_annot, y = percent, fill = day)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("") +
+  theme_minimal() +
+  labs(fill = "Day") +
+  theme(legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(size = 22, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 20),
+        axis.text.y = element_text(size = 20)) +
+  scale_fill_manual(values = c(pal[7], pal[1], pal[4]))
+```
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Tfr-Fol", "GC-Tfr", 
+                                     "Il1r2-Treg_1", "Il1r2-Treg_2", "eTreg",
+                                     "Intermediate Treg","High-Metabolism Treg_1",
+                                     "High-Metabolism Treg_2", "Early Treg", 
+                                     "Treg Naive", "Treg (IFN signaling)",
+                                     "CellCycle", "APCs"))
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(final_annot, cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(final_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = final_annot, y = percent, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("") +
+  theme_minimal() +
+  coord_flip() +
+  labs(fill = "Sorting") +
+  theme(legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(size = 22, face = "bold"),
+        axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20)) +
+  scale_fill_manual(values = c(pal[1], pal[4], "#97C9EF", pal[9]))
+```
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Tfr-Fol", "GC-Tfr", 
+                                     "Il1r2-Treg_1", "Il1r2-Treg_2", "eTreg",
+                                     "Intermediate Treg","High-Metabolism Treg_1",
+                                     "High-Metabolism Treg_2", "Early Treg", 
+                                     "Treg Naive", "Treg (IFN signaling)",
+                                     "CellCycle", "APCs"))
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(final_annot, experiment) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(final_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = final_annot, y = percent, fill = experiment)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("") +
+  theme_minimal() +
+  coord_flip() +
+  labs(fill = "Sorting") +
+  theme(legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(size = 22, face = "bold"),
+        axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20)) +
+  scale_fill_manual(values = c("#E97132", "#990033"))
+```
+
+
+```{r fig.width=12, fig.height=8}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Tfr-Fol", "GC-Tfr", 
+                                     "Il1r2-Treg_1", "Il1r2-Treg_2", "eTreg",
+                                     "Intermediate Treg","High-Metabolism Treg_1",
+                                     "High-Metabolism Treg_2", "Early Treg", 
+                                     "Treg Naive", "Treg (IFN signaling)",
+                                     "CellCycle", "APCs"))
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(final_annot, orig.ident) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(final_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = final_annot, y = percent, fill = orig.ident)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("") +
+  theme_minimal() +
+  coord_flip() +
+  labs(fill = "Sorting") +
+  theme(legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(size = 22, face = "bold"),
+        axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20)) +
+  scale_fill_manual(values = c(pal[1], pal[3], pal[14], pal[5],
+                               pal[10], pal[7], pal[12], pal[15]))
+```
+
+
+```{r fig.width=12, fig.height=3}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Tfr-Fol", "GC-Tfr", 
+                                     "Il1r2-Treg_1", "Il1r2-Treg_2", "eTreg",
+                                     "Intermediate Treg","High-Metabolism Treg_1",
+                                     "High-Metabolism Treg_2", "Early Treg", 
+                                     "Treg Naive", "Treg (IFN signaling)",
+                                     "CellCycle", "APCs"))
+
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  filter(final_annot == "CellCycle") %>%
+  group_by(final_annot, cell_type) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(final_annot) %>%
+  mutate(percent = count / sum(count) * 100)
+
+# Step 2: Plot
+ggplot(counts_df, aes(x = final_annot, y = percent, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  ylab("Percentage of Cells") +
+  xlab("") +
+  theme_minimal() +
+  coord_flip() +
+  labs(fill = "Sorting") +
+  theme(legend.title = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(size = 22, face = "bold"),
+        axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20)) +
+  scale_fill_manual(values = c(pal[1], pal[4], pal[6], pal[9]))
+```
+
+
+```{r fig.width=18, fig.height=12}
+# Step 1: Compute percentages
+counts_df = srat@meta.data %>%
+  group_by(final_annot, cell_type) %>%
+  summarise(count = n(), .groups = "drop") 
+
+label_df = counts_df %>%
+  group_by(final_annot) %>%
+  summarise(count = sum(count)) 
+
+# Step 2: Plot
+f1pl3 = ggplot() + 
+  geom_bar(data = counts_df, aes(x = final_annot, y = count, fill = cell_type),
+                    stat = "identity", position = "stack") +
+  geom_text(data = label_df, aes(x = final_annot, y = count, label = count),
+    hjust = -0.1, size = 11) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  coord_flip() +
+  labs(x = "", y="Number of Cells" ,fill = "Sorting") +
+  theme_minimal() +
+  theme(legend.title = element_text(size = 28, face = "bold"),
+        legend.text = element_text(size = 28),
+        axis.title.x = element_text(size = 28, face = "bold", margin = margin(t = 15)),
+        axis.text.x = element_text(size = 24),
+        axis.text.y = element_text(size = 28, colour = "black")) +
+  scale_fill_manual(values = c(pal[1], pal[4],"#97C9EF", pal[9]))
+
+f1pl3
+```
+
+
+```{r fig.width=32, fig.height=25}
+fig2_top = cowplot::plot_grid(f1pl1, f1pl3, ncol = 2,
+                          rel_widths = c(1.3,0.9), labels = c("A","C"),
+                          label_size = 38)
+
+fig2 = cowplot::plot_grid(fig2_top, f1pl2, nrow = 2,
+                          rel_heights = c(1.4,1.1), labels = c("","B"),
+                          label_size = 38) +
+  theme(plot.margin = margin(t = 10, r = 20, b = 20, l = 20))
+
+fig2
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/figure2.png", fig2, dpi = 300, bg="white", limitsize = FALSE)
+```
+
+
+
+# DEGs
+
+```{r}
+cl_use = "annot" 
+srat = SetIdent(srat, value = cl_use)
+mk = wilcoxauc(srat, group_by = cl_use, seurat_assay = "RNA")
+mk$pct_diff = mk$pct_in - mk$pct_out
+View(mk)
+```
+
+```{r}
+mk_11 = mk %>%
+  filter(group == "11_Treg (IFN signaling)") %>%
+  arrange(desc(logFC)) %>%
+  slice_head(n = 35) %>%
+  pull(feature)
+```
+
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between all clusters
+de_all = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_all_unfilt.csv"))
+de_all = subset(de_all, pvals_adj < 0.05)
+de_all$group = factor(de_all$group)
+```
+
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between intermediate Treg clusters (1, 4 and 6)
+de_treg = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_MAtreg_unfilt.csv"))
+de_treg = subset(de_treg, pvals_adj < 0.05)
+de_treg$group <- factor(de_treg$group)
+```
+
+
+```{r}
+mk_1 = wilcoxauc(srat, group_by = "final_annot", seurat_assay = "RNA", 
+                 groups_use = c("Intermediate Treg","High-Metabolism Treg_1",
+                                "High-Metabolism Treg_2","Early Treg","Treg Naive",
+                                "Treg (IFN signaling)"))
+mk_1$pct_diff = mk_1$pct_in - mk_1$pct_out
+View(mk_1)
+```
+
+
+```{r}
+mk_3 = wilcoxauc(srat, group_by = "final_annot", seurat_assay = "RNA", 
+                 groups_use = c("High-Metabolism Treg_1",
+                                "High-Metabolism Treg_2"))
+mk_3$pct_diff = mk_3$pct_in - mk_3$pct_out
+View(mk_3)
+```
+
+
+```{r}
+mk_2 = wilcoxauc(srat, group_by = "final_annot", seurat_assay = "RNA", 
+                 groups_use = c("4", "12_Treg naive", "8_Treg naive"))
+mk_2$pct_diff = mk_2$pct_in - mk_2$pct_out
+View(mk_2)
+```
+
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between naive Treg clusters (8 and 12)
+de_ntreg = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_naive_treg_unfilt.csv"))
+de_ntreg = subset(de_ntreg, pvals_adj <= 0.05)
+de_ntreg$group = factor(de_ntreg$group)
+```
+
+
+```{r}
+cluster12 = de_ntreg %>%
+  filter(group == "12") %>%
+  arrange(desc(pct_diff)) %>%
+  slice_head(n = 30) %>%
+  pull(names)
+```
+
+
+
+
+```{r}
+de_theme = theme_bw()+
+  theme(aspect.ratio = 1,
+        legend.title = element_blank(),
+        legend.spacing = unit(0.04, "lines"),
+        legend.background = element_blank(),
+        plot.title = element_text(size = 16, face = "bold"),
+        legend.box.spacing = unit(0.02, "lines"),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(colour = "black", size = 11),
+        axis.title = element_text(face = "bold", size = 14, margin = margin(t = 20)),
+        plot.margin = margin(t = 10, r = 10, b = 10, l = 10))
+```
+
+
+## TFH: Follicular vs GC
+
+
+```{r}
+cl_show = c("GC-Tfh", "Tfh-Fol")
+
+cells_highlight = lapply(cl_show, function(x) {
+  WhichCells(srat, expression = final_annot == x)
+})
+names(cells_highlight) = cl_show
+
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        cells.highlight = cells_highlight,
+        cols.highlight = c(pal[2], pal[9])) +
+  ggtitle("Tfh") +
+  theme(plot.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+  
+```
+
+
+```{r fig.width=8, fig.height=6}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between Tfh fol (cluster 0) and Tfh GC (cluster 9)
+de_tfh = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_tfh_unfilt.csv"))
+de_tfh$group = factor(de_tfh$group)
+
+de_tfh = de_tfh %>%
+  filter(annot == "Tfh_fol") %>%
+  mutate(isDE = case_when(
+    logfoldchanges >= 0.2 & pvals_adj <= 0.05 ~ "Tfh-Fol",
+    logfoldchanges <= -0.2 & pvals_adj <= 0.05 ~ "GC-Tfh",
+    TRUE ~ "Non-DE"
+  ))
+
+
+genes_label = c("Sell","Klf2","S1pr1","Ccr7","Il7r","Selplg","Gpr183","Lef1",
+                "Itgb7","Slamf6","Tcf7","Sh2d1a","Cd28","Srgn","Ascl2","Nsd2",
+                "Pou2af1","Il21","Bcl6","Nrp1","Il6st","Nrp1","Tnfsf8","Mif",
+                "Ikzf3","Cxcr5","Tox","Cd40lg","Pdcd1","Maf","S1pr2","Il4",
+                "Cebpa","Hif1a","Cd200")  #type Tfh2
+
+text_df = de_tfh[de_tfh$names %in% genes_label,]
+
+de_pal = c("Tfh-Fol" = pal[2], "GC-Tfh" = pal[9], "Non-DE" = "lightgray")
+
+de_plot = ggplot(de_tfh, aes(x = pct_nz_group, y = pct_nz_reference, colour = isDE)) +
+  geom_point(size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "black") +
+  ggrepel::geom_text_repel(
+      data = text_df,
+      segment.colour = "black", colour = "black",
+      fontface = "bold", min.segment.length = 0,
+      size = 4.5, alpha = 1, max.overlaps = 18,
+      mapping = aes(x = pct_nz_group,
+                    y = pct_nz_reference,
+                    label = names)) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  scale_color_manual(values = de_pal) +
+  scale_x_continuous(breaks = seq(0, 1, 0.25), labels = c(0, 25, 50, 75, 100)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.25), labels = c(0, 25, 50, 75, 100)) +
+  labs(
+    x = "% of cells in Tfh Follicular Cluster",
+    y = "% of cells in GC-Tfh Cluster") +
+  de_theme
+
+de_plot
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/tfh_heterogeneity.png",
+       de_plot, dpi = 300, bg="white")
+```
+
+```{r fig.width=8, fig.height=10}
+ggplot(de_tfh, aes(x = logfoldchanges, y = -log10(pvals_adj), colour = isDE)) +
+  geom_point(size = 1) +
+  ggrepel::geom_text_repel(
+      data = text_df,
+      segment.colour = "black", colour = "black",
+      fontface = "bold", min.segment.length = 0,
+      size = 4.5, alpha = 1, max.overlaps = 18,
+      mapping = aes(x = logfoldchanges,
+                    y = -log10(pvals_adj),
+                    label = names)) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  scale_color_manual(values = de_pal) +
+  scale_x_continuous(limits = c(-7,7)) +
+  labs(
+    x = "logfoldchange",
+    y = "-log10(pval)") +
+  theme_bw()+
+  theme(legend.title = element_blank(),
+        legend.spacing = unit(0.04, "lines"),
+        legend.background = element_blank(),
+        plot.title = element_text(size = 16, face = "bold"),
+        legend.box.spacing = unit(0.02, "lines"),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(colour = "black", size = 11),
+        axis.title = element_text(face = "bold", size = 14))
+```
+
+
+
+
+## TFR: Follicular vs GC
+
+```{r}
+cl_show = c("GC-Tfr", "Tfr-Fol")
+
+cells_highlight = lapply(cl_show, function(x) {
+  WhichCells(srat, expression = final_annot == x)
+})
+names(cells_highlight) = cl_show
+
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        cells.highlight = cells_highlight,
+        cols.highlight = c(pal[7], pal[6])) +
+  ggtitle("Tfr") +
+  theme(plot.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+  
+```
+
+
+```{r fig.width=8, fig.height=6}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between Tfr fol (cluster 3) and Tfr GC (cluster 15)
+de_tfr = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_tfr_unfilt.csv"))
+de_tfr$group = factor(de_tfr$group)
+
+de_pal = c("Tfr-Fol" = pal[7], "GC-Tfr" = pal[6], "Non-DE" = "lightgray")
+
+de_tfr = de_tfr %>%
+  filter(group == "3") %>%
+  mutate(isDE = case_when(
+    logfoldchanges >= 0.2 & pvals_adj <= 0.05 ~ "Tfr-Fol",
+    logfoldchanges <= -0.2 & pvals_adj <= 0.05 ~ "GC-Tfr",
+    TRUE ~ "Non-DE"
+  ))
+
+
+genes_label = c("Klf2","Tut4","S1pr1","Smad7","Tcf7","Lef1",
+                "Foxp1","Foxp3","Foxo1","Maf","Sh2d1a","Nfkbia",
+                "Gpr183","Il1r2","Batf","Tnfrsf9","Runx1","Bcl11b","Ets1",
+                "Pa2g4","Stx11","Fbl","Ifit3","Gas5","Cd28",
+                "Socs3","Tnfrsf4","Egr3","Il18r1","Stat1","Mif")  
+
+text_df = de_tfr[de_tfr$names %in% genes_label,]
+
+de_pal = c("Tfr-Fol" = pal[7], "GC-Tfr" = pal[6], "Non-DE" = "lightgray")
+
+de_plot = ggplot(de_tfr, aes(x = pct_nz_group, y = pct_nz_reference, colour = isDE)) +
+  geom_point(size = 1) +
+  geom_abline(slope = 1, intercept = 0, color = "black") +
+  ggrepel::geom_text_repel(
+      data = text_df,
+      segment.colour = "black", colour = "black",
+      fontface = "bold", min.segment.length = 0,
+      size = 4.5, alpha = 1, max.overlaps = 12,
+      mapping = aes(x = pct_nz_group,
+                    y = pct_nz_reference,
+                    label = names)) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  scale_color_manual(values = de_pal) +
+  scale_x_continuous(breaks = seq(0, 1, 0.25), labels = c(0, 25, 50, 75, 100)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.25), labels = c(0, 25, 50, 75, 100)) +
+  labs(
+    x = "% cells in Tfr Follicular Cells",
+    y = "% cells in GC-Tfr Cells") +
+  de_theme
+
+de_plot
+#ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/tfr_heterogeneity.png", de_plot, dpi = 300, bg="white")
+```
+
+
+## Unique Markers: Tfr vs Tfh and Tfr vs eTreg
+
+```{r}
+# FUNCTIONS
+processDEresults = function(degs1, degs2, thr = 0.25){
+  degs1$is_de = degs1$pvals_adj<=0.05 & abs(degs1$logfoldchanges)>=thr & 
+                  abs(degs1$pct_diff) >= 0.1
+  
+  degs2$is_de = degs2$pvals_adj<=0.05 & abs(degs2$logfoldchanges)>=thr &
+                  abs(degs2$pct_diff) >= 0.1
+  
+  res = merge(degs1[,c(1,3,5,8,9)], degs2[,c(1,3,5,8,9)], by = 1)
+  colnames(res) = c("Gene", "logFC_Tfr.vs.Tfh", "padj_Tfr.vs.Tfh",
+                    "pDiff_Tfr.vs.Tfh", "isDE_Tfr.vs.Tfh",
+                    "logFC_Tfr.vs.Treg", "padj_Tfr.vs.Treg",
+                    "pDiff_Tfr.vs.Treg", "isDE_Tfr.vs.Treg")
+  res$Gene = as.character(res$Gene)
+  res$col = ifelse(res$logFC_Tfr.vs.Tfh>thr &
+                     res$logFC_Tfr.vs.Treg>thr &
+                      res$isDE_Tfr.vs.Tfh &
+                        res$isDE_Tfr.vs.Treg,
+                     "DEG Tfr",
+                     ifelse(res$logFC_Tfr.vs.Tfh<(-thr)&
+                              res$logFC_Tfr.vs.Treg>0 &
+                                res$isDE_Tfr.vs.Tfh,
+                              "DEG Tfh",
+                              ifelse(res$logFC_Tfr.vs.Tfh>0 &
+                                       res$logFC_Tfr.vs.Treg<(-thr) &
+                                         res$isDE_Tfr.vs.Treg,
+                                        "DEG eTreg",
+                                       ifelse(res$logFC_Tfr.vs.Tfh<(-thr) &
+                                                res$logFC_Tfr.vs.Treg<(-thr) &
+                                                  res$isDE_Tfr.vs.Tfh &
+                                                    res$isDE_Tfr.vs.Treg,
+                                                   "DEG Tfh and eTreg", "Other"))))
+  
+  res$col = factor(res$col, levels = c("DEG Tfr","DEG Tfh","DEG eTreg",
+                                       "DEG Tfh and eTreg","Other"))
+  return(res)
+}
+
+
+plotDE = function(de_tab, col_pal, title_plt, text_df, 
+                  xlim_plt=NULL, ylim_plt=NULL){
+  de_tab = de_tab[order(de_tab$col, decreasing = T),]
+  plt = ggplot(de_tab, aes(x = logFC_Tfr.vs.Treg, y = logFC_Tfr.vs.Tfh, 
+                           colour = col))+
+    geom_point(size = 4)+
+    geom_hline(yintercept = 0, color = "gray", linewidth = 0.5) +
+    geom_vline(xintercept = 0, color = "gray", linewidth = 0.5) +
+    ggrepel::geom_text_repel(data = text_df, segment.colour = "black", 
+                             colour = "black", min.segment.length = 0.2,
+                             fontface = "bold", size = 12, alpha = 1,
+                             max.overlaps = 10,
+                             mapping = aes(x = logFC_Tfr.vs.Treg, 
+                                           y = logFC_Tfr.vs.Tfh,
+                                           label = Gene))+
+    scale_colour_manual(values = col_pal)+
+    guides(colour = guide_legend(override.aes = list(size = 3)))+
+    labs(x = "Average logFC Tfr vs eTreg", y = "Average logFC Tfr vs Tfh",
+         colour = "", shape = "", title = title_plt)+
+    de_theme +
+      theme(axis.line = element_blank(),
+            panel.grid = element_blank())
+  
+  if(!is.null(xlim_plt) & !is.null(ylim_plt)){
+    plt = plt + coord_cartesian(xlim = xlim_plt, ylim = ylim_plt)
+  }
+  
+  return(plt)
+}
+```
+
+
+```{r fig.width=26, fig.height=16}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between Tfr (cluster 3 and 15) and effector Treg (cluster 10)
+de_tfr_treg = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/validations_correct/degs_tfr_etreg_unfilt.csv"))
+de_tfr_treg$group = factor(de_tfr_treg$group)
+
+# DEGs between Tfr (cluster 3 and 15) and Tfh (cluster 0 and 9)
+de_tfr_tfh = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/validations_correct/degs_tfr_tfh_unfilt.csv"))
+de_tfr_tfh$group = factor(de_tfr_tfh$group)
+
+
+de_tfr_tfh = de_tfr_tfh %>%
+  filter(group == "Tfr") %>%
+  select(!group)
+
+de_tfr_treg = de_tfr_treg %>%
+  filter(group == "Tfr") %>% 
+  select(!group)
+
+degs_tfr_tfh_treg = processDEresults(de_tfr_tfh, de_tfr_treg, thr=0.2)
+
+degs_tfr_tfh_treg = degs_tfr_tfh_treg %>%
+  filter((padj_Tfr.vs.Tfh<=0.05 & abs(logFC_Tfr.vs.Tfh)>=0.2 &
+                  abs(pDiff_Tfr.vs.Tfh) >= 0.1) | 
+           (padj_Tfr.vs.Treg<=0.05 & abs(logFC_Tfr.vs.Treg)>=0.2)&
+                  abs(pDiff_Tfr.vs.Treg) >= 0.1)
+
+
+tfr_mk = degs_tfr_tfh_treg  %>%
+  filter(col == "DEG Tfr") %>%
+  arrange(desc(logFC_Tfr.vs.Tfh * logFC_Tfr.vs.Treg)) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  filter(!grepl("BE692007", Gene)) %>%
+  slice_head(n = 7) %>%
+  pull(Gene)
+
+tfh_mk = degs_tfr_tfh_treg  %>%
+  filter(col == "DEG Tfh") %>%
+  arrange(logFC_Tfr.vs.Tfh) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  slice_head(n = 15) %>%
+  pull(Gene)
+
+treg_mk = degs_tfr_tfh_treg  %>%
+  filter(col == "DEG eTreg") %>%
+  arrange(logFC_Tfr.vs.Treg) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  slice_head(n = 15) %>%
+  pull(Gene)
+
+non_tfr_mk = degs_tfr_tfh_treg  %>%
+  filter(col == "DEG Tfh and eTreg") %>%
+  arrange(desc(logFC_Tfr.vs.Tfh * logFC_Tfr.vs.Treg)) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene),
+         !grepl("^Rpl", Gene), !grepl("^Fam", Gene)) %>%
+  filter(!grepl("CAAA01147332.1", Gene), !grepl("BC017643", Gene)) %>%
+  slice_head(n = 5) %>%
+  pull(Gene)
+
+
+genes_top = c("Tle5","Calhm6",tfr_mk, tfh_mk, treg_mk,"Tigit", non_tfr_mk)
+
+text_df = degs_tfr_tfh_treg[degs_tfr_tfh_treg$Gene %in% genes_top,]
+
+de_pal = c("DEG Tfr" = pal[4], "DEG Tfh" = pal[1], "DEG eTreg" = "#97C9EF",
+           "DEG Tfh and eTreg" = "#8188C9", "Other" = "lightgray")
+
+
+de_plot = plotDE(degs_tfr_tfh_treg, de_pal, "", text_df,
+                     xlim = c(-5.5,5), ylim = c(-5.5, 5)) +
+  guides(color = guide_legend(override.aes = list(size = 8))) +
+  theme_bw()+
+  theme(legend.title = element_blank(),
+        legend.spacing = unit(0.04, "lines"),
+        legend.background = element_blank(),
+        legend.margin = margin(l=30),
+        plot.title = element_text(size = 16, face = "bold"),
+        legend.box.spacing = unit(0.02, "lines"),
+        legend.text = element_text(size = 38),
+        axis.text = element_text(colour = "black", size = 28),
+        axis.title.x = element_text(face = "bold", size = 38, margin = margin(t = 25, b=10)),
+        axis.title.y = element_text(face = "bold", size = 38, margin = margin(r = 25, l=10)),
+        plot.margin = margin(t = 10, r = 10, b = 10, l = 10))
+
+de_plot
+#ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/DEGs/bbknn/validations_correct/tfr_tfh_etreg.png", de_plot, height = 3000, width = 3000, units = "px", dpi = 300, limitsize = FALSE)
+```
+
+
+```{r}
+cl_show = c("GC-Tfr", "Tfr-Fol", "eTreg")
+
+cells_highlight = lapply(cl_show, function(x) {
+  WhichCells(srat, expression = final_annot == x)
+})
+
+names(cells_highlight) = cl_show
+
+
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        cells.highlight = cells_highlight, shuffle = T, seed=8,
+        cols.highlight = c(pal[4], pal[4], "#97C9EF")) +
+  ggtitle("DE Analysis Tfr vs eTreg") +
+  scale_color_manual(values = c("GC-Tfr" = pal[4], "Tfr-Fol" = pal[4],
+               "eTreg" = "#97C9EF", "Unselected" = "gray"),
+               breaks = c("GC-Tfr", "Tfr-Fol", "eTreg")) +
+  theme(plot.title = element_text(face = "bold", size = 24, hjust = 1),
+        legend.text = element_text(size = 22),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+```{r}
+cl_show = c("GC-Tfr", "Tfr-Fol", "GC-Tfh", "Tfh-Fol")
+
+cells_highlight = lapply(cl_show, function(x) {
+  WhichCells(srat, expression = final_annot == x)
+})
+
+names(cells_highlight) = cl_show
+
+
+DimPlot(srat, reduction = "umap", group.by = "final_annot", 
+        cells.highlight = cells_highlight) +
+  ggtitle("DE Analysis Tfr vs Tfh") +
+  scale_color_manual(values = c("GC-Tfr" = pal[4], "Tfr-Fol" = pal[4],
+               "GC-Tfh" = pal[1],"Tfh-Fol" = pal[1], "Unselected" = "gray"),
+               breaks = c("GC-Tfr", "Tfr-Fol", "GC-Tfh", "Tfh-Fol")) +
+  theme(plot.title = element_text(face = "bold", size = 24, hjust = 1),
+        legend.text = element_text(size = 22),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+
+```
+
+
+## DEGS: GC vs Follicular (Combined Tfh and Tfr)
+
+```{r}
+# FUNCTIONS
+processDEresults = function(degs1, degs2, thr = 0.25){
+  degs1$is_de = degs1$pvals_adj<=0.05 & abs(degs1$logfoldchanges)>=thr & 
+                  abs(degs1$pct_diff) >= 0.1
+  
+  degs2$is_de = degs2$pvals_adj<=0.05 & abs(degs2$logfoldchanges)>=thr &
+                  abs(degs2$pct_diff) >= 0.1
+  
+  res = merge(degs1[,c(1,3,5,8,9)], degs2[,c(1,3,5,8,9)], by = 1)
+  colnames(res) = c("Gene", "logFC_Tfh", "padj_Tfh",
+                    "pDiff_Tfh", "isDE_Tfh",
+                    "logFC_Tfr", "padj_Tfr",
+                    "pDiff_Tfr", "isDE_Tfr")
+  res$Gene = as.character(res$Gene)
+  res$col = ifelse(res$logFC_Tfh>thr &
+                     res$logFC_Tfr>thr &
+                      res$isDE_Tfh &
+                        res$isDE_Tfr,
+                     "DEG GC",
+                     ifelse(res$logFC_Tfh<(-thr)&
+                              res$logFC_Tfr>thr &
+                                res$isDE_Tfh  &
+                                  res$isDE_Tfr,
+                              "DEG Tfh-Fol and GC-Tfr",
+                              ifelse(res$logFC_Tfh>thr &
+                                       res$logFC_Tfr<(-thr) &
+                                         res$isDE_Tfr  &
+                                            res$isDE_Tfh,
+                                        "DEG GC-Tfh and Tfr-Fol",
+                                       ifelse(res$logFC_Tfh<(-thr) &
+                                                res$logFC_Tfr<(-thr) &
+                                                  res$isDE_Tfh &
+                                                    res$isDE_Tfr,
+                                                   "DEG Follicular", "Other"))))
+  
+  res$col = factor(res$col, levels = c("DEG GC","DEG Follicular",
+                                       "DEG Tfh-Fol and GC-Tfr",
+                                       "DEG GC-Tfh and Tfr-Fol","Other"))
+  return(res)
+}
+
+
+plotDE = function(de_tab, col_pal, title_plt, text_df, 
+                  xlim_plt=NULL, ylim_plt=NULL){
+  de_tab = de_tab[order(de_tab$col, decreasing = T),]
+  plt = ggplot(de_tab, aes(x = logFC_Tfh, y = logFC_Tfr, 
+                           colour = col))+
+    geom_point(size = 1.4)+
+    geom_hline(yintercept = 0, color = "gray", linewidth = 0.5) +
+    geom_vline(xintercept = 0, color = "gray", linewidth = 0.5) +
+    ggrepel::geom_text_repel(data = text_df, segment.colour = "black", 
+                             colour = "black", min.segment.length = 0.2,
+                             fontface = "bold", size = 6, alpha = 1,
+                             max.overlaps = 18,
+                             mapping = aes(x = logFC_Tfh, 
+                                           y = logFC_Tfr,
+                                           label = Gene))+
+    scale_colour_manual(values = col_pal)+
+    guides(colour = guide_legend(override.aes = list(size = 3)))+
+    labs(x = "Average logFC Tfh GC vs Fol", y = "Average logFC Tfr GC vs Fol",
+         colour = "", shape = "", title = title_plt)+
+    de_theme +
+      theme(axis.line = element_blank(),
+            panel.grid = element_blank())
+  
+  if(!is.null(xlim_plt) & !is.null(ylim_plt)){
+    plt = plt + coord_cartesian(xlim = xlim_plt, ylim = ylim_plt)
+  }
+  
+  return(plt)
+}
+```
+
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# DEGs between GC-Tfr (cluster 3) and Tfr-Fol (cluster 15)
+de_tfh = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_tfh_unfilt.csv"))
+de_tfh$group = factor(de_tfh$group)
+
+# DEGs between GC-Tfh (cluster 9) and Tfh-Fol (cluster 0)
+de_tfr = read.csv(paste0(dir, "analysis/results/DEGs/bbknn/degs_tfr_unfilt.csv"))
+de_tfr$group = factor(de_tfr$group)
+
+de_pal = c("DEG GC" = pal[4], "DEG Tfh-Fol and GC-Tfr" = pal[2],
+           "DEG GC-Tfh and Tfr-Fol" = pal[14],
+           "DEG Follicular" = pal[17], "Other" = "lightgray")
+
+de_tfh = de_tfh %>%
+  filter(annot == "Tfh_GC") %>%
+  select(-group, -annot)
+
+de_tfr = de_tfr %>%
+  filter(group == "15") %>% 
+  select(!group)
+
+degs_fol_gc = processDEresults(de_tfh, de_tfr, thr=0.2)
+
+degs_fol_gc = degs_fol_gc %>%
+  filter((padj_Tfh<=0.05 & abs(logFC_Tfh)>=0.2 &
+            abs(pDiff_Tfh)>=0.1) | 
+           (padj_Tfr<=0.05 & abs(logFC_Tfr)>=0.2 &
+              abs(pDiff_Tfr)>=0.1))
+
+
+gc_mk = degs_fol_gc  %>%
+  filter(col == "DEG GC") %>%
+  arrange(desc(logFC_Tfh * logFC_Tfr)) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  slice_head(n = 15) %>%
+  pull(Gene)
+
+q2_mk = degs_fol_gc  %>%
+  filter(col == "DEG Tfh-Fol and GC-Tfr") %>%
+  arrange(logFC_Tfh * logFC_Tfr) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  slice_head(n = 15) %>%
+  pull(Gene)
+
+q4_mk = degs_fol_gc  %>%
+  filter(col == "DEG GC-Tfh and Tfr-Fol") %>%
+  arrange(logFC_Tfh * logFC_Tfr) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene)) %>%
+  slice_head(n = 15) %>%
+  pull(Gene)
+
+fol_mk = degs_fol_gc  %>%
+  filter(col == "DEG Follicular") %>%
+  arrange(desc(logFC_Tfh * logFC_Tfr)) %>%
+  filter(!grepl("^Gm", Gene), !grepl("Rik$", Gene), !grepl("Rik2$", Gene)) %>%
+  slice_head(n = 25) %>%
+  pull(Gene)
+
+
+genes_top = c(gc_mk, fol_mk, q2_mk, q4_mk,"Gpr183")
+
+text_df = degs_fol_gc[degs_fol_gc$Gene %in% genes_top,]
+
+de_plot = plotDE(degs_fol_gc, de_pal, "", text_df,
+                     xlim = c(0, 4), ylim = c(0, 4))
+
+de_plot
+
+#ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/DEGs/bbknn/fol_vs_gc.png", de_plot, height = 3000, width = 3000, units = "px", dpi = 300, limitsize = FALSE)
+```
+
+```{r}
+de_plot = plotDE(degs_fol_gc, de_pal, "", text_df,
+                     xlim = c(-3, 0), ylim = c(-3, 0))
+
+de_plot
+```
+
+
+
+
+
+# Validations
+
+```{r fig.width=28, fig.height=12}
+srat$final_annot = factor(srat$final_annot, 
+                          levels = c("APCs", "CellCycle", "Treg (IFN signaling)",
+                                     "Treg Naive", "Early Treg", "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2", "Intermediate Treg", 
+                                     "eTreg", "Il1r2-Treg_1",
+                                     "Il1r2-Treg_2", "GC-Tfr", "Tfr-Fol",
+                                     "GC-Tfh", "Tfh-Fol"))
+
+validation_markers = list(
+  "Tfh" = list("Art2b","Cd160","Cd200","Tnfsf11","Il4","Tcf7","Tnfsf8"),
+  "Tfr" = list("Calhm6","Tle5"),
+  "eTreg" = list("Klrg1","Ccrl2","Gpr15","Gzmb","Il1rl1","Ccr2",
+                "Itgae","Ccr5","Entpd1","Tnfrsf9"),
+  "non-Tfr" = list("Tigit")
+  )
+
+
+val2 = DotPlot(srat, features = validation_markers, assay = "RNA", group.by = "final_annot", dot.scale = 18) +
+  theme(strip.text.x = element_text(size = 34, face = "bold", angle = 75),
+        legend.title = element_text(size = 28, face = "bold"),
+        legend.text = element_text(size = 24),
+        legend.key.size = unit(1.8, "lines"),  
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 38, margin = margin(l=15,r=15)),
+        axis.text.y = element_text(size = 35, margin = margin(b=18, r=10, t=10)),
+        axis.line = element_line(size = 1.5),
+        plot.margin = margin(t = 30, r = 50, b = 10, l = 10)) +
+  scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
+
+val2
+```
+
+
+```{r fig.width=20, fig.height=26}
+genes = c("Calhm6","Tle5","Tigit","Art2b","Cd160","Tnfsf11","Gpr15","Ccrl2")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 32, face = "bold"),
+          legend.text = element_text(size = 30),
+          legend.key.size = unit(2, "lines"),
+          axis.title = element_text(size = 38),
+          axis.text = element_text(size = 25),
+          plot.margin = margin(t = 20, r = 20, b = 20, l = 20))
+})
+
+val3 = wrap_plots(feature_plots, ncol = 2) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 40))
+val3
+```
+
+
+```{r fig.width=10, fig.height=14}
+genes = c("Tle5","Calhm6")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 32, face = "bold"),
+          legend.text = element_text(size = 30),
+          legend.key.size = unit(2, "lines"),
+          axis.title = element_text(size = 38),
+          axis.text = element_text(size = 25),
+          plot.margin = margin(t = 20, r = 20, b = 20, l = 20))
+})
+
+val3 = wrap_plots(feature_plots, ncol = 1) + 
+  theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 40))
+val3
+```
+
+
+
+```{r fig.width=42, fig.height=32}
+val_fig_right = cowplot::plot_grid(de_plot, val2, nrow = 2,
+                          rel_heights = c(1.1,0.9), labels = c("A","B"),
+                          label_size = 45, label_y = c(1, 0.94))
+  
+  
+val_fig = cowplot::plot_grid(val_fig_right, val3, ncol = 2,
+                          rel_widths = c(1.1,0.9), labels = c("","C"),
+                          label_size = 45, label_x = c(0,-0.03)) +
+  theme(plot.margin = margin(t = 20, r = 30, b = 25, l = 25))
+
+val_fig
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/markers_validations.png",val_fig, dpi = 300, bg="white", limitsize = FALSE)
+```
+
+
+
+```{r fig.width= 18, fig.height=5}
+FeaturePlot(srat, features = c("Calhm6","Tle5","Tigit"), 
+            order=T, pt.size = 0.8, ncol = 3)
+```
+
+```{r fig.width=24, fig.height=6}
+genes = c("Calhm6","Tle5","Tigit")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 3)
+```
+
+
+```{r fig.width= 18, fig.height=15}
+FeaturePlot(srat, features = c("Klrg1","Ccrl2","Gpr15","Gzmb","Il1rl1","Itgae",
+                                  "Ccr5","Entpd1","Tnfrsf9"), 
+            order=T, pt.size = 1.1, ncol = 3)
+```
+
+```{r fig.width=16, fig.height=18}
+genes = c("Klrg1","Ccrl2","Gzmb","Il1rl1","Itgae","Tnfrsf9")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 2)
+```
+
+
+
+```{r fig.width=24, fig.height=10}
+FeaturePlot(srat, features = c("Art2b","Cd160","Cd200","Tnfsf11","Il4","Tcf7",
+                                  "Tnfsf8"), 
+            order=T, pt.size = 1.2, ncol = 4)
+```
+
+
+```{r fig.width=16, fig.height=18}
+genes = c("Art2b","Cd160","Tnfsf11","Il4","Tcf7","Tnfsf8")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 2)
+```
+
+
+
+```{r fig.width=8, fig.height=18}
+genes = c("Calhm6","Tle5","Tigit")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 18),
+          legend.key.size = unit(1.5, "lines"),
+          axis.title = element_text(size = 16))
+})
+
+wrap_plots(feature_plots, ncol = 1)
+```
+
+
+# Validations (unifying Tfh cluster)
+
+
+```{r}
+annot2_df = c(
+  "0" = "0_Tfh",
+  "1" = "1",
+  "2" = "2_Il1r2",
+  "3" = "3_Tfr",
+  "4" = "4",
+  "5" = "5_Il1r2",
+  "6" = "6",
+  "7" = "7",
+  "8" = "8_Treg naive",
+  "9" = "0_Tfh",
+  "10" = "10_eTreg",
+  "11" = "11_Treg (IFN signaling)",
+  "12" = "12_Treg naive",
+  "13" = "13_CellCycle",
+  "14" = "14_CellCycle",
+  "15" = "15_Tfr-GC (Il1r2)",
+  "16" = "16_APCs"
+)
+
+srat$annot2 = unname(annot2_df[as.character(srat$leiden_res_0.9)])
+```
+
+
+```{r}
+DimPlot(srat, reduction = "umap", group.by = "annot2", cols = pal)
+```
+
+```{r}
+cl_use = "annot2" 
+mk_2 = wilcoxauc(srat, group_by = cl_use, seurat_assay = "RNA")
+mk_2$pct_diff = mk_2$pct_in - mk_2$pct_out
+View(mk_2)
+```
+
+
+```{r fig.width=15, fig.height=6}
+VlnPlot(srat, features=c("Calhm6","Tle5","Tigit"), group.by = "leiden_res_0.9", ncol = 3)
+```
+
+
+
+```{r fig.width=15, fig.height=20}
+VlnPlot(srat, features=c("Klrg1","Ccrl2","Gpr15","Gzmb","Il1rl1","Itgae",
+                          "Ccr5","Entpd1","Tnfrsf9"),
+        group.by = "leiden_res_0.9", ncol = 3)
+```
+
+
+```{r fig.width=20, fig.height=12}
+VlnPlot(srat, features=c("Art2b","Cd160","Cd200","Tnfsf11","Il4","Tcf7","Tnfsf8"),
+        group.by = "leiden_res_0.9", ncol = 4)
+```
+
+
+```{r}
+features = c("Calhm6","Tle5","Klrg1","Ccrl2","Gpr15","Gzmb",
+             "Il1rl1","Ccr2","Itgae","Ccr5","Entpd1","Tnfrsf9","Art2b",
+             "Cd160","Cd200","Tnfsf11","Il4","Tcf7","Tnfsf8","Tigit")
+
+vln_plots = list()
+
+for (feature in features) {
+  p = VlnPlot(
+    object = srat,
+    features = feature,
+    group.by = "annot",
+    split.by = "day"
+  )
+  
+  vln_plots[[feature]] = p
+}
+```
+
+
+# IL-2 receptors
+
+```{r fig.width=10, fig.height=10}
+VlnPlot(srat, features=c("Il1r2","Il2ra","Il2rb","Il2rg"), group.by = cl_use,
+        ncol = 2)
+```
+
+
+```{r fig.width=10, fig.height=10}
+VlnPlot(srat, features=c("Il1r2","Il2ra","Il2rb","Il2rg"), group.by = cl_use,
+        ncol = 2, log=T)
+```
+
+
+```{r fig.width=30, fig.height=15}
+VlnPlot(srat, features=c("Il1r2","Il2ra","Il2rb","Il2rg"), group.by = cl_use,
+        split.by="day", ncol = 2)
+```
+
+
+# CellRank Trajectory Inference
+
+```{r}
+dir = "C:/Users/maria/Documents/iMM/thesis/"
+
+# Tfh driver genes
+tfr_drivers = read.csv(paste0(dir, "analysis/results/RNAvelocity_cellrank/tfr_driver_genes.csv"))
+
+# eTreg driver genes
+etreg_drivers = read.csv(paste0(dir, "analysis/results/RNAvelocity_cellrank/etreg_driver_genes.csv"))
+
+# Load Trajectory Anndata data into Seurat object
+
+
+# Load metadata (w/ Macrostates and Fate probabilities)
+trajectory_metadata = read.csv(paste0(dir,"analysis/results/RNAvelocity_cellrank/treg_tfr_cellrank_final_metadata.csv"), row.names = 1)
+
+features = read.csv(paste0(dir, "analysis/results/RNAvelocity_cellrank/var_names.csv"), 
+                    stringsAsFactors = FALSE)[[1]]
+
+
+srat = srat[features, rownames(trajectory_metadata)]
+
+
+# load PCA components
+pca = as.matrix(read.csv(paste0(dir, "analysis/results/RNAvelocity_cellrank/pca.csv"), row.names = 1))
+colnames(pca) = paste0("PC_", 1:ncol(pca))
+srat@reductions$pca = CreateDimReducObject(embeddings = pca, key = "PC_", assay = "RNA")
+
+# load UMAP components
+umap = as.matrix(read.csv(paste0(dir, "analysis/results/RNAvelocity_cellrank/umap.csv"), row.names = 1))
+srat@reductions$umap = CreateDimReducObject(embeddings = umap, key = "umap_", assay = "RNA")
+```
+
+
+```{r}
+srat@meta.data = trajectory_metadata
+head(srat@meta.data)
+```
+
+
+```{r}
+saveRDS(srat, 
+        file = paste0(dir,"analysis/results/RNAvelocity_cellrank/trf_treg_trajectory.RDS"))
+```
+
+
+```{r}
+srat = readRDS(paste0(dir,"analysis/results/RNAvelocity_cellrank/trf_treg_trajectory.RDS"))
+```
+
+
+
+```{r fig.width=12, fig.height=6}
+srat$new_annotation = factor(srat$new_annotation, 
+                          levels = c("Tfh-Fol", "GC-Tfh", "Treg Naive", 
+                                     "eTreg", "Early Treg", 
+                                     "High-Metabolism Treg_1", 
+                                     "High-Metabolism Treg_2",
+                                     "Intermediate Treg", "Treg (IFN signaling)", 
+                                     "Il1r2-Treg_1","Il1r2-Treg_2", 
+                                     "CellCycle", "GC-Tfr", "Tfr-Fol", "APCs"))
+
+
+pal = met.brewer("Klimt", 20)
+
+col_pal = c("Tfh-Fol"=pal[1], "GC-Tfh"=pal[2], "Treg Naive"=pal[3],
+            "eTreg"=pal[4], "Early Treg"=pal[5],"High-Metabolism Treg_1"=pal[6],
+            "High-Metabolism Treg_2"=pal[7], "Intermediate Treg"=pal[8], 
+            "Treg (IFN signaling)"=pal[9],"Il1r2-Treg_1"=pal[10],
+            "Il1r2-Treg_2"=pal[11],"CellCycle"=pal[12], 
+            "GC-Tfr"=pal[13], "Tfr-Fol"=pal[14], "APCs"=pal[15])
+
+umap = DimPlot(srat, reduction = "umap", group.by = "new_annotation", 
+        pt.size = 1.2, cols = col_pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 28, margin = margin(b=7)),
+        legend.text = element_text(size = 28, margin = margin(b=7,l=7)),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 10, r = 10, b = 20, l = 20))
+
+umap
+```
+
+
+```{r fig.width=12, fig.height=6}
+srat$macrostates_fwd[srat$macrostates_fwd == ""] = "Other"
+
+macrostate_pal = c("Other"="#ECECEC","CellCycle_1"=pal[15],"CellCycle_2"=pal[16],
+                   "CellCycle_3"=pal[17],"eTreg"=pal[4],
+                   "High-Metabolism Treg_1"=pal[6],"Il1r2-Treg_1"=pal[10],
+                   "Il1r2-Treg_2"=pal[11],"Tfr-Fol"=pal[14],
+                   "Treg (IFN signaling)"=pal[9],"Treg Naive_1"=pal[3],
+                   "Treg Naive_2"=pal[2])
+
+
+states_plt = DimPlot(srat, reduction = "umap", group.by = "macrostates_fwd", 
+        pt.size = 2.8, cols = macrostate_pal, 
+        order = c("Treg Naive_1","Treg Naive_2","Treg (IFN signaling)",
+                  "Tfr-Fol","Il1r2-Treg_2","Il1r2-Treg_1",
+                  "High-Metabolism Treg_1","eTreg","CellCycle_1",
+                  "CellCycle_2","CellCycle_3","")) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Macrostates") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 28, margin = margin(b=7)),
+        legend.text = element_text(size = 28, margin = margin(b=7,l=7)),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16),
+        plot.margin = margin(t = 20, r = 20, b = 20, l = 10))
+states_plt
+```
+
+
+```{r fig.width=18, fig.height=10}
+library(tidyr)
+
+fate_prob_df = srat@meta.data %>%
+  select(new_annotation, fate_probabilities_etreg, fate_probabilities_tfr, 
+         fate_probabilities_naivetreg) %>%
+  group_by(new_annotation) %>%
+  summarise(eTreg = mean(fate_probabilities_etreg),
+            `Tfr-Fol` = mean(fate_probabilities_tfr),
+            `Treg Naive_1` = mean(fate_probabilities_naivetreg)) %>%
+  pivot_longer(cols = c(eTreg, `Tfr-Fol`, `Treg Naive_1`), 
+               names_to = "lineage", 
+               values_to = "probability")
+
+prob_plt = ggplot(fate_prob_df, aes(x = new_annotation, y = lineage, fill = probability)) +
+  geom_tile() +
+  geom_text(aes(label = round(probability, 2)), color = "white", size = 10) +
+  scale_fill_gradientn(colors = met.brewer("Homer1", direction = -1, n = 4), name = "probability") +
+  scale_fill_viridis_c(name = "probability") +
+  theme_minimal() +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(size = 28),
+        legend.text = element_text(size = 22),
+        legend.key.size = unit(1.8, "lines"), 
+        axis.title.x = element_blank(),
+        axis.title = element_text(size = 28, face = "bold", margin = margin(r=20)),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text = element_text(size = 24),
+        plot.margin = margin(t = 20, r = 20, b = 10, l = 20))
+prob_plt
+```
+
+
+```{r}
+classifier_meta = read.csv(paste0(dir,"analysis/results/RNAvelocity_cellrank/classifier/meta_test_with_predictions.csv"), row.names = 1)
+```
+
+```{r fig.width=8, fig.height=6}
+pred_df = classifier_meta %>%
+  select(pred_rfc, annot_classifier) %>%
+  group_by(pred_rfc,annot_classifier) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  complete(pred_rfc = pred_rfc, annot_classifier = annot_classifier, fill = list(n = 0)) %>%
+  group_by(annot_classifier) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+cm = ggplot(pred_df, aes(x = pred_rfc, y = annot_classifier, fill = percentage)) +
+  geom_tile() +
+  geom_text(aes(label = round(percentage, 2)), color = "white", size = 12) +
+  scale_fill_gradientn(colors = met.brewer("Homer1", direction = -1, n = 3), name = "probability") +
+  #scale_fill_viridis_c(name = "probability") +
+  labs(x = "Predicted label", y = "True label") +
+  theme_minimal() +
+  theme(plot.title = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 22),
+        legend.key.size = unit(1.8, "lines"),
+        axis.title = element_text(size = 28, face = "bold", margin = margin(r=20)),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text = element_text(size = 24),
+        plot.margin = margin(t = 10, r = 50, b = 20, l = 50))
+
+cm
+```
+
+
+```{r fig.width=12, fig.height=14}
+genes = c("Tox2","Gzmb","Sh2d1a","Ccr2","Cxcr5","Klrg1")
+
+feature_plots = lapply(genes, function(gene) {
+  FeaturePlot(srat, features = gene,  order=T, pt.size = 0.9) +
+    theme(plot.title = element_text(size = 30, face = "bold"),
+          legend.text = element_text(size = 20),
+          legend.key.size = unit(2, "lines"),
+          axis.title = element_text(size = 18),
+          plot.margin = margin(t = 20, r = 20, b = 20, l = 20))
+})
+
+gene_drivers = wrap_plots(feature_plots, ncol = 2) + 
+  theme(plot.margin = margin(t = 20, r = 10, b = 10, l = 40))
+gene_drivers
+```
+
+
+```{r fig.width=32, fig.height=26}
+fig_top = cowplot::plot_grid(cm, umap, ncol = 2,
+                          rel_widths = c(0.8,1.2), labels = c("A","B"),
+                          label_size = 40)
+  
+  
+fig_left = cowplot::plot_grid(states_plt, prob_plt, nrow = 2,
+                          rel_heights = c(1,0.9), labels = c("C","D"),
+                          label_size = 40) 
+
+fig_bottom = cowplot::plot_grid(fig_left, gene_drivers, ncol = 2,
+                          rel_widths = c(1.2,0.9), labels = c("","E"),
+                          label_size = 40) 
+
+fig = cowplot::plot_grid(fig_top, fig_bottom, nrow = 2,
+                          rel_heights = c(1.1,1.8), labels = c("","")) +
+  theme(plot.margin = margin(t = 20, r = 30, b = 25, l = 25))
+
+fig
+ggsave("C:/Users/maria/Documents/iMM/thesis/analysis/results/figures/cellrank_trajectories.png",
+       fig, dpi = 300, bg="white")
+```
+
+
+
+

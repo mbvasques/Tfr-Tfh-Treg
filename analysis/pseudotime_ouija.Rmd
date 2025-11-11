@@ -1,0 +1,1427 @@
+---
+title: "pseudotime_ouija"
+author: "mb_vasques"
+date: "2025-07-21"
+output: html_document
+---
+
+# Load necessary libraries
+
+```{r}
+# data manipulation
+library(Seurat)
+library(Matrix)
+library(dplyr)
+
+# pseudotime
+library(ouija)
+library(rstan)
+library(switchde)
+
+# parallel running
+library(future)
+library(future.apply)
+
+# memory control
+library(pryr)
+
+# plotting
+library(ggplot2)
+library(patchwork)
+library(gplots)
+library(cowplot)
+library(ggridges)
+
+# palette
+library(MetBrewer)
+```
+
+
+# Load the Seurat Object
+
+```{r}
+bbknn = readRDS(file = "/mnt/scratch/mariana.vasques/pseudotime/srat_final_bbknn.RDS")
+```
+
+
+## Subset the object for the different trajectories
+
+```{r}
+bbknn = subset(bbknn, subset = bbknn_annotation != "APCs")
+```
+
+
+```{r}
+ouija_treg = subset(bbknn, subset = cell_type == "Treg")
+saveRDS(ouija_treg, file="/mnt/scratch/mariana.vasques/pseudotime/ouija_treg_srat.RDS")
+
+ouija_tfh = subset(bbknn, subset = cell_type == "Tfh")
+saveRDS(ouija_tfh, file="/mnt/scratch/mariana.vasques/pseudotime/ouija_tfh_srat.RDS")
+
+ouija_tfr = subset(bbknn, cells = WhichCells(bbknn, expression = cell_type == "Tfr" | day == 0))
+saveRDS(ouija_tfr, file="/mnt/scratch/mariana.vasques/pseudotime/ouija_tfr_srat.RDS")
+```
+
+
+# Run Ouija Trajectory Inference
+
+```{r}
+# Logging function
+with_logging = function(expr, file, catch_error = FALSE, envir = parent.frame()) {
+  log_file = file(file, open = "a")
+  
+  start_time = Sys.time()
+  cat(sprintf("\n--- Log start: %s ---\n", start_time), file = log_file, append = TRUE)
+  
+  sink(log_file, type = "output", append = TRUE, split = FALSE)  
+  sink(log_file, type = "message", append = TRUE)
+  
+  result = NULL
+  error_occurred = FALSE
+  error_obj = NULL
+  
+  if (catch_error) {
+    tryCatch({
+      result = eval(expr, envir = envir)},
+      error = function(e) {
+        error_occurred <<- TRUE
+        error_obj <<- e
+        
+        cat("\n*** ERROR: ", conditionMessage(e), "\n", file = log_file, append = TRUE)
+        tb = capture.output(traceback(max.lines = 20))
+        cat("*** TRACEBACK:\n", paste(tb, collapse = "\n"), "\n", file = log_file, append = TRUE)
+      })
+  } else {
+    result = eval(expr, envir = envir)
+  }
+  
+  sink(type = "message")
+  sink(type = "output")
+  
+  end_time = Sys.time()
+  cat(sprintf("\n--- Log end: %s ---\n", end_time), file = log_file, append = TRUE)
+  
+  duration = difftime(end_time, start_time, units = "secs")
+  cat(sprintf("\n--- Runtime: %.2f seconds ---\n", as.numeric(duration)), file = log_file, append = TRUE)
+  
+  close(log_file)
+  
+  if (error_occurred) {
+    class(error_obj) = c("logged_error", class(error_obj))
+    return(error_obj)
+  }
+  
+  return(result)
+}
+
+```
+
+
+
+```{r}
+# Function for Ouija pipeline
+pseudotime_ouija = function(dir, file_path, group_name, genes, iter, n_chains) {
+  
+  rstan::rstan_options(auto_write = TRUE)
+  options(mc.cores = n_chains)
+  
+  expr_env = new.env(parent = environment())
+  expr_env$dir = dir
+  expr_env$file_path = file_path
+  expr_env$group_name = group_name
+  expr_env$genes = genes
+  expr_env$iter = iter
+  expr_env$n_chains = n_chains
+  expr_env$oui_model_path = paste0(dir, group_name, "_ouija_model_v1.RDS")
+  expr_env$srat_path = paste0(dir, group_name, "_srat_pseudotime.RDS")
+  expr_env$tmap_path = paste0(dir, group_name, "_pseudotime_map_v1.csv")
+  
+  # Define the whole expression to log
+  expr = quote({
+    cat(sprintf("Memory before loading Seurat: %.2f MB\n", pryr::mem_used() / 1024^2))
+    
+    # Load Seurat object
+    srat_ouija = readRDS(paste0(dir, file_path))
+    cat("Loaded Seurat object.\n")
+    cat(sprintf("Memory after loading Seurat: %.2f MB\n", pryr::mem_used() / 1024^2))
+    
+    # Extract expression matrix and filter for target genes
+    expr_matrix = GetAssayData(srat_ouija, assay = "RNA", layer = "data")
+    expr_matrix = expr_matrix[genes, , drop = FALSE]
+    expr_matrix = as.matrix(t(expr_matrix))
+    cat("Prepared expression matrix.\n")
+    cat(sprintf("Memory after preparing expr matrix: %.2f MB\n", pryr::mem_used() / 1024^2))
+    
+    
+    oui = ouija(expr_matrix, inference_type = "hmc", iter = iter, chains = n_chains)
+    cat("Completed Ouija model fitting.\n")
+    cat(sprintf("Memory after Ouija fitting: %.2f MB\n", pryr::mem_used() / 1024^2))
+    
+    cat("Saving Ouija model....\n")
+    # Save Ouija model
+    saveRDS(oui, file = oui_model_path)
+    cat(sprintf("Saved Ouija model to %s\n", oui_model_path))
+    
+    #cat(sprintf("Loading Ouija model from %s\n", oui_model_path))
+    #oui = readRDS(oui_model_path)
+    
+    
+    # Create plots
+    diag_plot = plot_diagnostics(oui)
+    expr_plot = plot_expression(oui)
+    switch_plot = plot_switch_times(oui)
+    cat("Generated diagnostic plots.\n")
+    
+    # Map pseudotime
+    tmap = map_pseudotime(oui)
+    names(tmap) = rownames(expr_matrix)
+    srat_ouija$tmap_1 = tmap
+    
+    
+    # Save updated Seurat object and Ouija model
+    cat("Saving updated Seurat Object....\n")
+    saveRDS(srat_ouija, file = srat_path)
+    
+    write.csv(tmap, row.names = T, file = tmap_path)
+    cat(sprintf("Saved updated Seurat object to %s\n", srat_path))
+    
+    
+    rm(srat_ouija, oui)
+    cat(sprintf("Memory after cleanup: %.2f MB\n", pryr::mem_used() / 1024^2))
+  
+    # Return everything for tracking
+    return(list(
+      oui_model = paste0(dir, group_name, "_ouija_model.RDS"),
+      pseudotime = paste0(dir, group_name, "_srat_pseudotime.RDS"),
+      diagnostics = diag_plot,
+      expression = expr_plot,
+      switch = switch_plot
+    ))
+  })
+  
+  # Run with logging and catch errors
+  result = with_logging(expr, file = paste0(dir, group_name, "_ouija_log.txt"),
+                        envir = expr_env, catch_error = TRUE)
+  
+  # Handle error if any
+  if (inherits(result, "logged_error")) {
+    warning("Ouija failed for group: ", group_name)
+    return(NULL)
+  }
+  
+  return(result)
+}
+
+```
+
+
+```{r}
+# Simultaneously run Ouija for Treg, Tfh and Tfr
+dir = "/mnt/scratch/mariana.vasques/pseudotime/"
+
+plan(multisession, workers = 3) # parallel work
+
+# Panel of genes;
+treg_genes = c("Sell", "Ccr7", "Klf2", "Lef1", "Foxp1", "Foxo1", "Itga4",
+               "Itga6", "Itgb7", "Ctla4", "Selplg", "Tnfrsf18", "Tnfrsf4",
+               "Lgals1", "Ccr2", "Gzmb", "Icos", "Tigit", "Prdm1", "Itgb1", "Itgae")
+tfr_genes = c("Cxcr5", "Pdcd1", "Itgal", "Ctla4", "Smad7", "Ccr7",
+              "Bcl6", "Sh2d1a", "Cd83", "Tnfrsf18", "Il1r2", "Sell", "Il7r",
+              "Icos", "Maf", "Ikzf2", "Tnfrsf4", "Il2ra", "S1pr1", "Lef1", 
+              "Klf2", "Bcl2", "Foxo1", "Batf")
+tfh_genes = c("Sell", "Selplg", "Cd28", "Tcf7", "Sh2d1a", "Cd40lg", "Bcl6",
+              "Tigit", "Klf2", "Gpr183", "Pou2af1", "Nsd2", "Cxcr5",
+              "Il21", "Fas", "S1pr1", "Nrp1", "Lef1", "Icos", "Pdcd1",
+              "Il4", "Srgn", "Il6st", "Btla", "Itgal", "Maf", "Batf", "Tox2",
+              "Ascl2", "Tox", "Stat3")
+
+gene_list = list(
+  "treg" = treg_genes,
+  "tfr" = tfr_genes,
+  "tfh" = tfh_genes
+  )
+
+# groups to process:
+group_list = list(
+  list(group_name = "treg", file_path = "treg_srat_pseudotime.RDS", genes = gene_list$treg),
+  list(group_name = "tfr", file_path = "tfr_srat_pseudotime.RDS", genes = gene_list$tfr),
+  list(group_name = "tfh", file_path = "tfh_srat_pseudotime.RDS", genes = gene_list$tfh)
+)
+
+```
+
+
+```{r}
+# Run Ouija
+oui_results = future_lapply(group_list, function(group) {
+  result_ptime = pseudotime_ouija(
+    dir = dir,
+    group_name = group$group_name,
+    file_path = group$file_path,
+    genes = group$genes,
+    iter = 500,
+    n_chains = 1 
+  )
+  
+  # Handle failure case
+  if (is.null(result_ptime)) {
+    warning("Skipping group due to error: ", group$group_name)
+    return(NULL)
+  }
+
+  # Save plot 
+  ggsave(
+    filename = paste0(dir, group$group_name, "_diagnostics_v2.png"),
+    plot = result_ptime$diagnostics
+  )
+
+  # Return result components
+  list(
+    oui_model_path = result_ptime$oui_model,
+    pseudotime_path = result_ptime$pseudotime,
+    diagnostics = result_ptime$diagnostics,
+    expression = result_ptime$expression,
+    switch = result_ptime$switch
+  )
+})
+```
+
+
+```{r}
+names(oui_results) = sapply(group_list, function(x) x[["group_name"]])
+#expression_plots = lapply(oui_results, `[[`, "expression")
+#models = lapply(oui_results, `[[`, "model")
+```
+
+
+### oui_results is 500 iter (1 chain), in tmap_1
+
+```{r}
+oui_results$treg$diagnostics
+```
+
+```{r}
+oui_results$treg$switch
+```
+
+```{r}
+oui_results$tfr$switch
+```
+
+
+## SwitchDE
+
+```{r}
+# Note: Keep track of tmap vs tmap_1
+
+# Function to run switchDE
+compute_switchDE = function(pseudotime_path) {
+  
+  # Load Seurat object
+  srat = readRDS(pseudotime_path)
+  
+  day_vector = srat$day
+  names(day_vector) = rownames(srat@meta.data)
+  
+  # Extract expression matrix and filter
+  expr_matrix = as.matrix(GetAssayData(srat, assay = "RNA", layer = "data"))
+  expr_matrix = expr_matrix[rowMeans(expr_matrix) > 0.01,] #filter genes 
+  
+  sde = switchde(expr_matrix, srat$tmap_1)
+  
+  return(list(
+    sde = sde,
+    tmap = srat$tmap_1,
+    expr_matrix = expr_matrix,
+    metadata = srat@meta.data,
+    day = day_vector))
+}
+```
+
+
+
+```{r}
+oui_pseudotime_v1 = future_lapply(oui_results, function(group) {
+  results_switchde = compute_switchDE(
+    pseudotime_path = group$pseudotime_path)
+
+  # Return result components
+  list(
+    sde = results_switchde$sde,
+    tmap = results_switchde$tmap,
+    expr_matrix = results_switchde$expr_matrix
+  )
+})
+```
+
+
+# Treg Activation Trajectory
+
+```{r}
+oui_pseudotime_v1$treg$metadata$day = factor(oui_pseudotime_v1$treg$metadata$day, 
+                                             levels = c("0", "6", "11"))
+```
+
+
+```{r fig.width=25, fig.height=40}
+plots = lapply(treg_genes, function(gene) {
+  switchplot(oui_pseudotime_v1$treg$expr_matrix[gene, ], 
+             oui_pseudotime_v1$treg$tmap, 
+             extract_pars(oui_pseudotime_v1$treg$sde, gene)) + 
+    ggtitle(gene) +
+    theme(plot.title = element_text(hjust = 0.5, size = 28, face = "bold")) 
+})
+
+plot_grid(plotlist = plots, ncol = 3)
+```
+
+
+```{r fig.width=32, fig.height=16}
+plots = lapply(c("Cxcr5","Icos","Sh2d1a","Cd69","Nr4a1","Itgae"), function(gene) {
+  switchplot(oui_pseudotime_v1$treg$expr_matrix[gene, ], 
+             oui_pseudotime_v1$treg$tmap, 
+             extract_pars(oui_pseudotime_v1$treg$sde, gene)) + 
+    ggtitle(gene) +
+    theme(plot.title = element_text(hjust = 0.5, size = 28, face = "bold")) 
+})
+
+plot_grid(plotlist = plots, ncol = 3)
+```
+
+
+```{r}
+pal = met.brewer("Klimt", 17)
+```
+
+
+```{r fig.width=32, fig.height=32}
+custom_switchplot = function(gene, expr, tmap, pars, metadata, color_by_col) {
+  df = data.frame(
+    expr = expr,
+    pseudotime = tmap,
+    color = metadata[[color_by_col]]
+  )
+  
+  df_fit = data.frame(
+    pseudotime = sort(tmap),
+    fitted = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"])))
+  )
+
+  ggplot(df, aes(x = -pseudotime + 1, y = expr, color = color)) +
+    geom_point(alpha = 0.6) +
+    geom_line(data = df_fit, aes(x = -pseudotime + 1, y = fitted), color = "darkred", size = 2) +
+    ggtitle(gene) +
+    labs(x = "Pseudotime",
+         y = "Expression",
+         color = color_by_col) +
+    scale_color_manual(values = c(pal[7], pal[1], pal[4])) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5, size = 42, face = "bold"),
+          legend.title = element_text(size = 24, face = "bold"),
+          legend.text = element_text(size = 22),
+          axis.title = element_text(size = 22),
+          axis.text = element_text(size = 18))
+}
+
+
+genes_plot = c("Ccr7", "Lef1", "Sell",
+               "Klf2", "Foxp1", "Icos", 
+               "Tigit", "Ctla4", "Itgae",
+               "Tnfrsf18", "Lgals1", "Tnfrsf4")
+
+plots = lapply(genes_plot, function(gene) {
+  gene = gene
+  pars = extract_pars(oui_pseudotime_v1$treg$sde, gene)
+  expr = oui_pseudotime_v1$treg$expr_matrix[gene, ]
+  tmap = oui_pseudotime_v1$treg$tmap
+  metadata = oui_pseudotime_v1$treg$metadata
+
+  custom_switchplot(gene, expr, tmap, pars, metadata, color_by_col = "day")
+})
+
+plot_grid(plotlist = plots, ncol = 3)
+```
+
+
+
+```{r fig.width=20, fig.height=10}
+# Genes to plot
+genes_plot = c("Icos", "Itgae","Gzmb","Ikzf2",
+                "Ctla4","Tnfrsf18","Klrg1","Sell","S1pr1","Ccr7","Klf2")
+
+# Extract pseudotime
+tmap = oui_pseudotime_v1$treg$tmap
+
+
+data_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$treg$sde, gene)
+  data.frame(
+    Pseudotime = sort(tmap),
+    Expression = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"]))),
+    Gene = gene
+  )
+}))
+
+labels_df = data_df %>%
+  group_by(Gene) %>%
+  top_n(1, wt = -Pseudotime+1) %>%
+  ungroup()
+
+gene_pal = c("Gzmb"=pal[4],"Itgae"=pal[5],"Klrg1"=pal[3],
+             "Icos"=pal[6],"Ikzf2"=pal[7],"Ctla4"=pal[1],
+             "Tnfrsf18"=pal[3],"Sell"=pal[16],"Ccr7"=pal[14],
+             "S1pr1"=pal[11],"Klf2"=pal[9])
+
+
+treg_plot = ggplot(data_df, aes(x = - Pseudotime + 1, y = Expression, color = Gene)) +
+  geom_line(size = 1.7) +
+  ylim(y= c(0,1.5)) +
+  ggrepel::geom_text_repel(data = labels_df,
+                           aes(x= -Pseudotime + 1, y=Expression ,
+                               label = Gene, color=Gene),
+                           direction = "y", segment.color = "darkgray",
+                           max.overlaps = 15, nudge_x = 0.05,
+                           size = 12, show.legend = FALSE) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  labs(x="Pseudotime", y="Expression", color="Genes") +
+  scale_color_manual(values = gene_pal) +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 28, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    plot.margin = margin(t=50, r=50, b=30, l=20)
+  )
+
+treg_plot
+```
+
+
+```{r fig.width=20, fig.height=10}
+# Genes to plot
+genes_plot = c("Sell","S1pr1","Ccr7","Klf2")
+
+# Extract pseudotime
+tmap = oui_pseudotime_v1$treg$tmap
+
+
+data_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$treg$sde, gene)
+  data.frame(
+    Pseudotime = sort(tmap),
+    Expression = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"]))),
+    Gene = gene
+  )
+}))
+
+labels_df = data_df %>%
+  group_by(Gene) %>%
+  top_n(1, wt = -Pseudotime+1) %>%
+  ungroup()
+
+gene_pal = c("Gzmb"=pal[4],"Itgae"=pal[5],"Klrg1"=pal[3],
+             "Icos"=pal[6],"Ikzf2"=pal[7],"Ctla4"=pal[1],
+             "Tnfrsf18"=pal[3],"Sell"=pal[16],"Ccr7"=pal[14],
+             "S1pr1"=pal[11],"Klf2"=pal[9])
+
+ggplot(data_df, aes(x = - Pseudotime + 1, y = Expression, color = Gene)) +
+  geom_line(size = 1.7) +
+  ylim(y= c(0,1.5)) +
+  ggrepel::geom_text_repel(data = labels_df,
+                           aes(x= -Pseudotime + 1, y=Expression ,
+                               label = Gene, color=Gene),
+                           direction = "y", segment.color = "darkgray",
+                           max.overlaps = 15, nudge_x = 0.05,
+                           size = 16, show.legend = FALSE) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  labs(x="Pseudotime", y="Expression", color="Genes") +
+  scale_color_manual(values = gene_pal) +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 28, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    plot.margin = margin(t=50, r=50, b=30, l=20)
+  )
+```
+
+
+
+```{r fig.width=15, fig.height=8}
+# Timepoint Distribution 
+df = data.frame(
+  pseudotime = (-oui_pseudotime_v1$treg$tmap)+1,
+  day = as.factor(oui_pseudotime_v1$treg$metadata$day)
+)
+
+treg_plot1 = ggplot(df, aes(x = pseudotime, fill = day)) +
+  geom_density(alpha = 0.6, color = "black", adjust = 1) +
+  scale_fill_manual(values = c(pal[7], pal[1], pal[4])) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Day distribution"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "top",
+    axis.title.x = element_text(size = 24, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 24, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    legend.title = element_text(size = 26, face = "bold"),
+    legend.text = element_text(size = 26),
+    plot.margin = margin(t=20, r=20, b=30, l=40)
+  )
+
+treg_plot1
+```
+
+
+
+```{r}
+fannot_df = c(
+  "0" = "Tfh-Fol",
+  "1" = "High-Metabolism Treg_2",
+  "2" = "Il1r2-Treg_2",
+  "3" = "Tfr-Fol",
+  "4" = "Early Treg",
+  "5" = "Il1r2-Treg_1",
+  "6" = "High-Metabolism Treg_1",
+  "7" = "Intermediate Treg",
+  "8" = "Treg Naive",
+  "9" = "GC-Tfh",
+  "10" = "eTreg",
+  "11" = "Treg (IFN signaling)",
+  "12" = "Treg Naive",
+  "13" = "CellCycle",
+  "14" = "CellCycle",
+  "15" = "GC-Tfr",
+  "16" = "APCs"
+)
+
+oui_pseudotime_v1$treg$metadata$final_annot = unname(fannot_df[as.character(oui_pseudotime_v1$treg$metadata$leiden_res_0.9)])
+```
+
+
+
+```{r }
+DimPlot(srat, reduction = "umap", group.by = "leiden_res_0.9", 
+        pt.size = 1.2, cols = pal) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +
+  labs(color = "Cluster") +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(face = "bold", size = 24),
+        legend.text = element_text(size = 20),
+        axis.title = element_text(colour = "black", face = "bold", size = 18),
+        axis.text = element_text(colour = "black", size = 16))
+```
+
+
+
+```{r fig.width=10, fig.height=6}
+# UMAP for pseudotime
+srat = readRDS("/mnt/scratch/mariana.vasques/pseudotime/treg_srat_pseudotime.RDS")
+srat$tmap_1 = - srat$tmap_1 + 1 
+
+treg_plot2 = FeaturePlot(srat, features = "tmap_1",  order=F, pt.size = 1.6) +
+  labs(color = "Pseudotime") +
+  coord_cartesian(clip = "off") +
+  scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100)) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(size = 28, face = "bold"),
+        legend.text = element_text(size = 18),
+        legend.key.size = unit(1.5, "lines"),
+        axis.title = element_text(size = 28),
+        axis.text = element_text(size = 24),
+        plot.margin = margin(t=40, r=30, b=20, l=20))
+
+treg_plot2
+```
+
+
+```{r fig.width=12, fig.height=8}
+# Cluster Distribution
+df = data.frame(
+  pseudotime = (-oui_pseudotime_v1$treg$tmap)+1,
+  cluster = as.factor(oui_pseudotime_v1$treg$metadata$final_annot)
+)
+
+df = df %>%
+  group_by(cluster) %>%
+  mutate(avg_pseudotime = mean(pseudotime)) %>%
+  ungroup()
+
+ggplot(df, aes(x = pseudotime, y = reorder(cluster, -avg_pseudotime), fill = cluster)) +
+  geom_density_ridges(scale = 1.2, rel_min_height = 0.01, alpha = 0.8, color = "black") +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_fill_manual(values = pal) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Cluster"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=20),
+    axis.text.y = element_text(size=22, face = "bold")
+  )
+```
+
+
+
+```{r fig.width=12, fig.height=8}
+# Cluster Distribution (filtered and with correct palette)
+df = data.frame(
+  pseudotime = (-oui_pseudotime_v1$treg$tmap)+1,
+  cluster = as.factor(oui_pseudotime_v1$treg$metadata$final_annot)
+)
+
+df = df %>%
+  group_by(cluster) %>%
+  filter(!cluster %in% c("Tfh-Fol","Tfr-Fol","GC-Tfr","GC-Tfh")) %>%
+  mutate(avg_pseudotime = mean(pseudotime)) %>%
+  ungroup()
+
+col_pal = c("Tfh-Fol" = pal[1], "GC-Tfh" = pal[2], "Treg Naive" = pal[3],
+        "eTreg" = pal[4], "Early Treg" = pal[5], "High-Metabolism Treg_1" = pal[6],
+        "High-Metabolism Treg_2" = pal[7], "Intermediate Treg" = pal[8],
+        "Treg (IFN signaling)" = pal[9], "Il1r2-Treg_1" = pal[10],
+        "Il1r2-Treg_2" = pal[11], "CellCycle" = pal[12], "GC-Tfr" = pal[13],
+        "Tfr-Fol" = pal[14], "APCs" = pal[15])
+
+treg_plot3 = ggplot(df, aes(x = pseudotime, y = reorder(cluster, -avg_pseudotime), fill = cluster)) +
+  geom_density_ridges(scale = 1.2, rel_min_height = 0.01, alpha = 0.8, color = "black") +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_fill_manual(values = col_pal) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Cluster"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=20, margin = margin(t=20)),
+    axis.text.y = element_text(size=28, face = "bold"),
+    plot.margin = margin(t=40, r=20, b=20, l=40)
+  )
+
+treg_plot3
+```
+
+
+
+```{r fig.width=32, fig.height=20}
+# Figure
+
+fig_top = cowplot::plot_grid(treg_plot, treg_plot1, ncol = 2,
+                          rel_widths = c(1.2,0.8), labels = c("A","B"),
+                          label_size = 36)
+
+fig_bottom = cowplot::plot_grid(treg_plot2, treg_plot3, ncol = 2,
+                          rel_widths = c(0.9,1.1), labels = c("C","D"),
+                          label_size = 36)
+
+treg_fig = cowplot::plot_grid(fig_top, fig_bottom, nrow = 2,
+                          rel_heights = c(1,1), labels = c("","")) +
+  theme(plot.margin = margin(t = 10, r = 20, b = 20, l = 20))
+
+treg_fig
+ggsave("/mnt/data2/home/mariana.vasques/projects/MScThesis/ouija_treg.png",
+       treg_fig, dpi = 300, bg="white", limitsize=FALSE)
+```
+
+
+
+# Tfr Differentiation Trajectory
+
+
+```{r}
+oui_pseudotime_v1$tfr$metadata$day = factor(oui_pseudotime_v1$tfr$metadata$day, 
+                                             levels = c("0", "6", "11"))
+```
+
+
+```{r fig.width=32, fig.height=30}
+custom_switchplot = function(gene, expr, tmap, pars, metadata, color_by_col) {
+  df = data.frame(
+    expr = expr,
+    pseudotime = tmap,
+    color = metadata[[color_by_col]]
+  )
+  
+  df_fit = data.frame(
+    pseudotime = sort(tmap),
+    fitted = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"])))
+  )
+
+  ggplot(df, aes(x = pseudotime, y = expr, color = color)) +
+    geom_point(alpha = 0.6) +
+    geom_line(data = df_fit, aes(x = pseudotime, y = fitted), color = "darkred", size = 2) +
+    ggtitle(gene) +
+    labs(x = "Pseudotime",
+         y = "Expression",
+         color = color_by_col) +
+    scale_color_manual(values = c(pal[7], pal[1], pal[4])) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5, size = 42, face = "bold"),
+          legend.title = element_text(size = 24, face = "bold"),
+          legend.text = element_text(size = 22),
+          axis.title = element_text(size = 22),
+          axis.text = element_text(size = 18))
+}
+
+genes_plot = c("S1pr2", "S1pr1", "Ccr7",
+               "Il2ra", "Icos", "Gpr183",
+               "Bcl6", "Cxcr5", "Il1r2",
+               "Sh2d1a", "Pdcd1", "Maf")
+
+plots = lapply(genes_plot, function(gene) {
+  gene = gene
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  expr = oui_pseudotime_v1$tfr$expr_matrix[gene, ]
+  tmap = oui_pseudotime_v1$tfr$tmap
+  metadata = oui_pseudotime_v1$tfr$metadata
+
+  custom_switchplot(gene, expr, tmap, pars, metadata, color_by_col = "day")
+})
+
+plot_grid(plotlist = plots, ncol = 3)
+```
+
+
+```{r fig.width=20, fig.height=10}
+# Genes to plot
+genes_plot = c("Ccr7","Klf2","Il2ra",
+               "Icos","Sh2d1a","Cxcr5","Pdcd1","Bcl6","Il1r2",
+               "Ctla4","Tnfrsf18")
+
+
+
+# Extract pseudotime
+tmap = oui_pseudotime_v1$tfr$tmap
+
+
+data_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  data.frame(
+    Pseudotime = sort(tmap),
+    Expression = (2* pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"]))),
+    Gene = gene
+  )
+}))
+
+labels_df = data_df %>%
+  group_by(Gene) %>%
+  top_n(1, wt = Pseudotime) %>%
+  ungroup()
+
+gene_pal = c("Ccr7"=pal[14],"Klf2"=pal[12],"Il2ra"=pal[16],
+             "Icos"=pal[3],"Sh2d1a"=pal[1],"Cxcr5"=pal[4],
+             "Pdcd1"=pal[6],"Bcl6"=pal[2],"Il1r2"=pal[7],
+             "Ctla4"=pal[10],"Tnfrsf18"=pal[9])
+
+tfr_plot = ggplot(data_df, aes(x = Pseudotime, y = Expression, color = Gene)) +
+  geom_line(size = 1.7) +
+  ggrepel::geom_text_repel(data = labels_df,
+                           aes(x= Pseudotime, y=Expression ,
+                               label = Gene, color=Gene),
+                           direction = "y", segment.color = "darkgray",
+                           max.overlaps = 10, nudge_x = 0.07, nudge_y = -0.03,
+                           size = 12, show.legend = FALSE) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  labs(x="Pseudotime", y="Expression", color="Genes") +
+  scale_color_manual(values = gene_pal) +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 28, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    plot.margin = margin(t=50, r=50, b=30, l=20)
+  )
+
+tfr_plot
+```
+
+
+```{r fig.width=20, fig.height=10}
+# Genes to plot
+genes_plot = c("Ccr7","Klf2","Il2ra","S1pr1")
+
+
+
+# Extract pseudotime
+tmap = oui_pseudotime_v1$tfr$tmap
+
+
+data_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  data.frame(
+    Pseudotime = sort(tmap),
+    Expression = (2* pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"]))),
+    Gene = gene
+  )
+}))
+
+labels_df = data_df %>%
+  group_by(Gene) %>%
+  top_n(1, wt = Pseudotime) %>%
+  ungroup()
+
+gene_pal = c("Ccr7"=pal[14],"Klf2"=pal[12],"Il2ra"=pal[16],"S1pr1"=pal[11],
+             "Icos"=pal[3],"Sh2d1a"=pal[1],"Cxcr5"=pal[4],
+             "Pdcd1"=pal[6],"Bcl6"=pal[2],"Il1r2"=pal[7],
+             "Ctla4"=pal[10],"Tnfrsf18"=pal[9])
+
+
+ggplot(data_df, aes(x = Pseudotime, y = Expression, color = Gene)) +
+  geom_line(size = 1.7) +
+  ggrepel::geom_text_repel(data = labels_df,
+                           aes(x= Pseudotime, y=Expression ,
+                               label = Gene, color=Gene),
+                           direction = "y", segment.color = "darkgray",
+                           max.overlaps = 10, nudge_x = 0.07, nudge_y = -0.03,
+                           size = 16, show.legend = FALSE) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  labs(x="Pseudotime", y="Expression", color="Genes") +
+  scale_color_manual(values = gene_pal) +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 28, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    plot.margin = margin(t=50, r=50, b=30, l=20)
+  )
+
+```
+
+
+
+```{r fig.width=20, fig.height=12}
+# Genes to plot
+genes_plot = c("Icos","Cxcr5","Pdcd1","Bcl6")
+
+
+# Extract pseudotime
+tmap = oui_pseudotime_v1$tfr$tmap
+
+
+data_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  data.frame(
+    Pseudotime = sort(tmap),
+    Expression = (2* pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"]))),
+    Gene = gene
+  )
+}))
+
+labels_df = data_df %>%
+  group_by(Gene) %>%
+  top_n(1, wt = Pseudotime) %>%
+  ungroup()
+
+
+# Extract switch times (t0) for each gene
+switch_df = do.call(rbind, lapply(genes_plot, function(gene) {
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  data.frame(Gene = gene, t0 = pars["t0"])
+}))
+
+gene_pal = c("Ccr7"=pal[14],"Klf2"=pal[12],"Il2ra"=pal[16],
+             "Icos"=pal[3],"Sh2d1a"=pal[1],"Cxcr5"=pal[4],
+             "Pdcd1"=pal[6],"Bcl6"=pal[2],"Il1r2"=pal[7],
+             "Ctla4"=pal[10],"Tnfrsf18"=pal[9])
+
+# Switc Time Plot
+ggplot(data_df, aes(x = Pseudotime, y = Expression, color = Gene)) +
+  geom_line(size = 1.7) +
+  geom_vline(data = switch_df, aes(xintercept = t0, color = Gene), 
+             linetype = "dashed", size = 1, alpha = 0.8) +
+  geom_vline(xintercept = 1, color = gene_pal["Bcl6"], linetype = "dashed", 
+             size = 1, alpha = 0.8) +
+  ggrepel::geom_text_repel(data = switch_df, aes(x = t0, y = 1.05, 
+                                  label = paste0(Gene, "\n", sprintf("%.2f", t0)),
+                                  color = Gene),
+            vjust = -0.4, size = 14, fontface = "bold", direction = "x", 
+            nudge_y = 0.02, segment.color = NA, max.overlaps = Inf, force = 2) +
+  coord_cartesian(ylim = c(0, 1.09), xlim = c(0, 1.03), clip = "off") +
+  theme_minimal() +
+  labs(x="Pseudotime", y="Expression", color="Genes") +
+  scale_color_manual(values = gene_pal) +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 28, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    plot.margin = margin(t=150, r=50, b=30, l=20)
+  )
+```
+
+
+
+
+```{r fig.width=15, fig.height=8}
+# Day Distribution
+df = data.frame(
+  pseudotime = oui_pseudotime_v1$tfr$tmap,
+  day = as.factor(oui_pseudotime_v1$tfr$metadata$day)
+)
+
+tfr_plot1 = ggplot(df, aes(x = pseudotime, fill = day)) +
+  geom_density(alpha = 0.6, color = "black", adjust = 1) +
+  scale_fill_manual(values = c(pal[7], pal[1], pal[4])) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Day distribution"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "top",
+    axis.title.x = element_text(size = 24, face = "bold", margin = margin(t=20)),
+    axis.title.y = element_text(size = 24, face = "bold", margin = margin(r=20)),
+    axis.text = element_text(size = 24),
+    legend.title = element_text(size = 26, face = "bold"),
+    legend.text = element_text(size = 26),
+    plot.margin = margin(t=20, r=20, b=30, l=40)
+  )
+
+tfr_plot1
+```
+
+
+```{r}
+# UMAP for pseudotime
+srat = readRDS("/mnt/scratch/mariana.vasques/pseudotime/tfr_srat_pseudotime.RDS")
+
+tfr_plot2 = FeaturePlot(srat, features = "tmap_1",  order=F, pt.size = 1.6) +
+  labs(color = "Pseudotime") +
+  coord_cartesian(clip = "off") +
+  scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100)) +
+  theme(plot.title = element_blank(),
+        legend.title = element_text(size = 28, face = "bold"),
+        legend.text = element_text(size = 18),
+        legend.key.size = unit(1.5, "lines"),
+        axis.title = element_text(size = 28),
+        axis.text = element_text(size = 24),
+        plot.margin = margin(t=40, r=30, b=20, l=20))
+
+tfr_plot2
+```
+
+
+
+```{r fig.width=12, fig.height=30}
+custom_switchplot = function(gene, expr, tmap, pars, metadata, color_by_col) {
+  df = data.frame(
+    expr = expr,
+    pseudotime = tmap,
+    color = metadata[[color_by_col]]
+  )
+  
+  df_fit = data.frame(
+    pseudotime = sort(tmap),
+    fitted = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"])))
+  )
+
+  ggplot(df, aes(x = pseudotime, y = expr, color = color)) +
+    geom_point(alpha = 0.6) +
+    geom_line(data = df_fit, aes(x = pseudotime, y = fitted), color = "darkred", size = 2) +
+    ggtitle(gene) +
+    labs(x = "Pseudotime",
+         y = "Expression",
+         color = color_by_col) +
+    scale_color_manual(values = c(pal[7], pal[1], pal[4])) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5, size = 42, face = "bold"),
+          legend.title = element_text(size = 24, face = "bold"),
+          legend.text = element_text(size = 22),
+          axis.title = element_text(size = 22),
+          axis.text = element_text(size = 18))
+}
+
+genes_plot = c("Selplg","Il2ra","Tle5","Tigit")
+
+plots = lapply(genes_plot, function(gene) {
+  gene = gene
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  expr = oui_pseudotime_v1$tfr$expr_matrix[gene, ]
+  tmap = oui_pseudotime_v1$tfr$tmap
+  metadata = oui_pseudotime_v1$tfr$metadata
+
+  custom_switchplot(gene, expr, tmap, pars, metadata, color_by_col = "day")
+})
+
+plot_grid(plotlist = plots, ncol = 1) + ggtitle("Tfr") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 52, face = "bold"))
+```
+
+
+
+
+```{r}
+fannot_df = c(
+  "0" = "Tfh-Fol",
+  "1" = "High-Metabolism Treg_2",
+  "2" = "Il1r2-Treg_2",
+  "3" = "Tfr-Fol",
+  "4" = "Early Treg",
+  "5" = "Il1r2-Treg_1",
+  "6" = "High-Metabolism Treg_1",
+  "7" = "Intermediate Treg",
+  "8" = "Treg Naive",
+  "9" = "GC-Tfh",
+  "10" = "eTreg",
+  "11" = "Treg (IFN signaling)",
+  "12" = "Treg Naive",
+  "13" = "CellCycle",
+  "14" = "CellCycle",
+  "15" = "GC-Tfr",
+  "16" = "APCs"
+)
+
+oui_pseudotime_v1$tfr$metadata$final_annot = unname(fannot_df[as.character(oui_pseudotime_v1$tfr$metadata$leiden_res_0.9)])
+```
+
+
+
+```{r fig.width=12, fig.height=8}
+# Cluster Distribution
+df = data.frame(
+  pseudotime = (oui_pseudotime_v1$tfr$tmap),
+  cluster = as.factor(oui_pseudotime_v1$tfr$metadata$final_annot)
+)
+
+df = df %>%
+  group_by(cluster) %>%
+  filter(!cluster %in% c("APCs")) %>% # removed clusters
+  mutate(avg_pseudotime = mean(pseudotime)) %>%
+  ungroup()
+
+ggplot(df, aes(x = pseudotime, y = reorder(cluster, -avg_pseudotime), fill = cluster)) +
+  geom_density_ridges(scale = 1.2, rel_min_height = 0.01, alpha = 0.8, color = "black") +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_fill_manual(values = pal) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Cluster"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=20),
+    axis.text.y = element_text(size=22, face = "bold")
+  )
+```
+
+
+
+```{r fig.width=12, fig.height=8}
+# Cluster Distribution
+df = data.frame(
+  pseudotime = (oui_pseudotime_v1$tfr$tmap),
+  cluster = as.factor(oui_pseudotime_v1$tfr$metadata$final_annot)
+)
+
+df = df %>%
+  group_by(cluster) %>%
+  filter(!cluster %in% c("Tfh-Fol","GC-Tfh","eTreg","APCs")) %>% # removed clusters
+  mutate(avg_pseudotime = mean(pseudotime)) %>%
+  ungroup()
+
+tfr_plot3 = ggplot(df, aes(x = pseudotime, y = reorder(cluster, -avg_pseudotime), fill = cluster)) +
+  geom_density_ridges(scale = 1.2, rel_min_height = 0.01, alpha = 0.8, color = "black") +
+  scale_x_continuous(limits = c(0, 1)) +
+  scale_fill_manual(values = col_pal) +
+  labs(
+    x = "Pseudotime",
+    y = "Density",
+    fill = "Cluster"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_text(size = 28, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=20, margin = margin(t=20)),
+    axis.text.y = element_text(size=28, face = "bold"),
+    plot.margin = margin(t=40, r=20, b=20, l=40)
+  )
+
+tfr_plot3
+```
+
+```{r fig.width=32, fig.height=22}
+# Figure
+fig_top = cowplot::plot_grid(tfr_plot, tfr_plot1, ncol = 2,
+                          rel_widths = c(1.2,0.8), labels = c("A","B"),
+                          label_size = 36)
+
+fig_bottom = cowplot::plot_grid(tfr_plot2, tfr_plot3, ncol = 2,
+                          rel_widths = c(0.9,1.1), labels = c("C","D"),
+                          label_size = 36)
+
+tfr_fig = cowplot::plot_grid(fig_top, fig_bottom, nrow = 2,
+                          rel_heights = c(1,1), labels = c("","")) +
+  theme(plot.margin = margin(t = 10, r = 20, b = 20, l = 20))
+
+tfr_fig
+ggsave("/mnt/data2/home/mariana.vasques/projects/MScThesis/ouija_tfr.png",
+       tfr_fig, dpi = 300, bg="white", limitsize=FALSE)
+```
+
+
+## Treg vs Tfr Comparison Gene Behaviour
+
+
+```{r fig.width=8, fig.height=60}
+custom_switchplot = function(gene, expr, tmap, pars, metadata, color_by_col) {
+  metadata[[color_by_col]] = factor(metadata[[color_by_col]],
+                                    levels = c("Tfh-Fol", "GC-Tfh", "Treg Naive", 
+                                               "eTreg", "Early Treg",
+                                               "High-Metabolism Treg_1",
+                                               "High-Metabolism Treg_2",
+                                               "Intermediate Treg", 
+                                               "Treg (IFN signaling)",
+                                               "Il1r2-Treg_1","Il1r2-Treg_2",
+                                               "CellCycle", "GC-Tfr", 
+                                               "Tfr-Fol", "APCs"))
+  
+  df = data.frame(
+    expr = expr,
+    pseudotime = tmap,
+    color = metadata[[color_by_col]]
+  )
+  
+  df_fit = data.frame(
+    pseudotime = sort(tmap),
+    fitted = (2 * pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"])))
+  )
+
+  ggplot(df, aes(x = -pseudotime + 1, y = expr, color = color)) + 
+    geom_point(alpha = 0.6) +
+    geom_line(data = df_fit, aes(x = -pseudotime + 1, y = fitted), color = "darkred", size = 2) +
+    ggtitle(gene) +
+    labs(x = "Pseudotime",
+         y = "Expression",
+         color = "Cluster") +
+    scale_color_manual(values =pal) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5, size = 42, face = "bold"),
+          legend.title = element_text(size = 28, face = "bold"),
+          legend.text = element_text(size = 28),
+          axis.title = element_text(size = 22),
+          axis.text = element_text(size = 18))
+}
+
+
+genes_plot = c("Il2ra","Il1r2","Selplg","Cxcr5","Tle5","Fyb","Itgb7","Itgal")
+
+#genes_plot = c("Il2ra","Tle5","Gas5","Selplg","Itgb7","Ccr2","Cxcr5","Itgae","Entpd1","Il1r2","Klrg1","Socs2","Gpr183","Itgal","Batf","Maf","Nfatc2","Tox","Tox2","Lgals1")
+
+plots = lapply(genes_plot, function(gene) {
+  gene = gene
+  pars = extract_pars(oui_pseudotime_v1$treg$sde, gene)
+  expr = oui_pseudotime_v1$treg$expr_matrix[gene, ]
+  tmap = oui_pseudotime_v1$treg$tmap
+  metadata = oui_pseudotime_v1$treg$metadata
+
+  custom_switchplot(gene, expr, tmap, pars, metadata, color_by_col = "final_annot")
+})
+
+legend = get_legend(plots[[1]] + theme(legend.position = "right"))
+plots = lapply(plots, function(p) p + theme(legend.position = "none"))
+
+fig3_treg = plot_grid(plotlist = plots, ncol = 1) + ggtitle("Treg") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 52, face = "bold", 
+                                  margin = margin(b=30)),
+        ,
+        plot.margin = margin(t = 10, r = 30, b = 20, l = 30))
+```
+
+
+```{r fig.width=8, fig.height=60}
+custom_switchplot = function(gene, expr, tmap, pars, metadata, color_by_col) {
+  metadata[[color_by_col]] = factor(metadata[[color_by_col]],
+                                    levels = c("Tfh-Fol", "GC-Tfh", "Treg Naive", 
+                                               "eTreg", "Early Treg",
+                                               "High-Metabolism Treg_1",
+                                               "High-Metabolism Treg_2",
+                                               "Intermediate Treg", 
+                                               "Treg (IFN signaling)",
+                                               "Il1r2-Treg_1","Il1r2-Treg_2",
+                                               "CellCycle", "GC-Tfr", 
+                                               "Tfr-Fol", "APCs"))
+  df = data.frame(
+    expr = expr,
+    pseudotime = tmap,
+    color = metadata[[color_by_col]]
+  )
+  
+  df_fit = data.frame(
+    pseudotime = sort(tmap),
+    fitted = (2*pars["mu0"]) / (1 + exp(-pars["k"] * (sort(tmap) - pars["t0"])))
+  )
+
+  ggplot(df, aes(x = pseudotime, y = expr, color = color)) +
+    geom_point(alpha = 0.6) +
+    geom_line(data = df_fit, aes(x = pseudotime, y = fitted), color = "darkred", size = 2) +
+    ggtitle(gene) +
+    labs(x = "Pseudotime",
+         y = "Expression",
+         color = color_by_col) +
+    scale_color_manual(values = pal) +
+    guides(color = guide_legend(override.aes = list(size = 5))) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5, size = 42, face = "bold"),
+          legend.title = element_text(size = 24, face = "bold"),
+          legend.text = element_text(size = 22),
+          axis.title = element_text(size = 26),
+          axis.text = element_text(size = 24))
+}
+
+genes_plot = c("Il2ra","Il1r2","Selplg","Cxcr5","Tle5","Fyb","Itgb7","Itgal")
+
+#genes_plot = c("Il2ra","Tle5","Gas5","Selplg","Itgb7","Ccr2","Cxcr5","Itgae","Entpd1","Il1r2","Klrg1","Socs2","Gpr183","Itgal","Batf","Maf","Nfatc2","Tox","Tox2","Lgals1")
+
+plots = lapply(genes_plot, function(gene) {
+  gene = gene
+  pars = extract_pars(oui_pseudotime_v1$tfr$sde, gene)
+  expr = oui_pseudotime_v1$tfr$expr_matrix[gene, ]
+  tmap = oui_pseudotime_v1$tfr$tmap
+  metadata = oui_pseudotime_v1$tfr$metadata
+
+  custom_switchplot(gene, expr, tmap, pars, metadata, color_by_col = "final_annot")
+})
+
+
+plots = lapply(plots, function(p) p + theme(legend.position = "none"))
+
+fig3_tfr = plot_grid(plotlist = plots, ncol = 1) + ggtitle("Tfr") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 52, face = "bold", 
+                                  margin = margin(b=30)),
+        plot.margin = margin(t = 10, r = 30, b = 20, l = 20))
+```
+
+
+```{r fig.width=22, fig.height=60}
+both_fig = plot_grid(fig3_tfr, fig3_treg, legend, ncol = 3, rel_widths = c(0.9,0.9, 0.6)) + 
+  theme(plot.margin = margin(t = 10, r = 20, b = 20, l = 20))
+
+both_fig
+ggsave("/mnt/data2/home/mariana.vasques/projects/MScThesis/ouija_both.png",
+       both_fig, dpi = 300, bg="white", limitsize=FALSE)
+```
+
+
+
+
+```{r}
+sigftr = oui_pseudotime_v1$tfr$sde[oui_pseudotime_v1$tfr$sde$qval < 0.05, ]
+sigtreg = oui_pseudotime_v1$treg$sde[oui_pseudotime_v1$treg$sde$qval < 0.05, ]
+
+sigtreg$k = - sigtreg$k
+sigtreg$t0 = - sigtreg$t0 + 1
+
+sigftr$direction = ifelse(sigftr$k > 0, "up", "down")
+sigtreg$direction = ifelse(sigtreg$k > 0, "up", "down")
+```
+
+
+```{r}
+merged = merge(sigftr[, c("gene", "mu0", "k", "t0", "direction")], 
+              sigtreg[, c("gene", "mu0", "k", "t0", "direction")], 
+              by = "gene", 
+              suffixes = c("_Tfr", "_Treg"))
+```
+
+
+```{r}
+sigftr_rel = sigftr %>%
+  filter(t0 > 0.5 & t0 < 1)
+```
+
+
+
+### current_results is 2000 iter (4 chains), in tmap
+
+```{r}
+current_results$treg$diagnostics
+```
+
+
+```{r fig.width=10, fig.height=20}
+current_results$treg$expression
+```
+
+
+```{r}
+current_results$tfr$diagnostics
+```
+
+
+```{r}
+current_results$tfh$diagnostics
+```
+
+
+```{r}
+compute_switchDE = function(pseudotime_path) {
+  
+  # Load Seurat object
+  srat = readRDS(pseudotime_path)
+  
+  # Extract expression matrix and filter
+  expr_matrix = as.matrix(GetAssayData(srat, assay = "RNA", layer = "data"))
+  expr_matrix = expr_matrix[rowMeans(expr_matrix) > 0.01,] #filter genes 
+  
+  sde = switchde(expr_matrix, srat$tmap)
+  
+  return(list(
+    sde = sde,
+    tmap = srat$tmap,
+    expr_matrix = expr_matrix))
+}
+```
+
+
+
+```{r}
+oui_pseudotime_v2 = future_lapply(current_results, function(group) {
+  results_switchde = compute_switchDE(
+    pseudotime_path = group$pseudotime_path)
+
+  # Return result components
+  list(
+    sde = results_switchde$sde,
+    tmap = results_switchde$tmap,
+    expr_matrix = results_switchde$expr_matrix
+  )
+})
+```
+
+
+

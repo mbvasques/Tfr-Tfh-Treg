@@ -36,9 +36,6 @@ library(cowplot)
 # palette
 library(MetBrewer)
 
-# saving
-library(Matrix)
-
 set.seed(1)
 ```
 
@@ -60,7 +57,7 @@ create_obj = function(path, orig_ident){
 sample_files = c("D104T11_filt","D104T13_filt","D104T14_filt","D104T15_filt",
               "D104T16_filt_treg","hCD2_d0_filt","hCD2_d6_filt","hCD2_d11_filt")
 
-dir = "/Users/maria/OneDrive/Documentos/iMM/data/RDS/"
+dir = "/Users/maria/Documents/iMM/thesis/data/RDS/"
 ```
 
 
@@ -410,8 +407,6 @@ DimPlot(harmony, group.by = "SNN_harmony20_res.0.4", split.by = "orig.ident",
 ```
 
 
-
-
 ```{r fig.width= 18, fig.height=17}
 FeaturePlot(harmony, features = c("Tigit","Foxp3","Cxcr5","Icos","Gzmb","Il2ra",
                                   "Ccr7","Bcl6","Sh2d1a","Sell","Il1r2","Cd40lg"), 
@@ -596,6 +591,7 @@ DimPlot(harmony, group.by = "bbknn_annotation", split.by = "harmony_annot",
         pt.size = 0.8, label.size = 12, cols = pal, ncol = 5)
 ```
 
+
 ```{r}
 cl_use = "bbknn_annotation" 
 harmony = SetIdent(harmony, value = cl_use)
@@ -609,6 +605,7 @@ length(tfr_ids_harmony)
 
 length(intersect(tfr_ids_harmony, tfr_ids_bbknn))
 ```
+
 
 ```{r}
 cl_use = "bbknn_annotation" 
@@ -693,6 +690,9 @@ saveRDS(harmony, file="/Users/maria/OneDrive/Documentos/iMM/analysis/results/RDS
 
 
 
+```{r}
+harmony = subset(harmony, subset = bbknn_annotation != "APCs")
+```
 
 ```{r}
 #ouija_treg = subset(harmony, subset = cell_type == "Treg")

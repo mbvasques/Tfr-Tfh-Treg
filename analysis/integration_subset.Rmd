@@ -112,6 +112,7 @@ ep = ElbowPlot(subset, ndims = 50)
 print(ep)
 ```
 
+
 ```{r}
 ncomp = 30
 subset = RunHarmony(subset, group.by.vars = "experiment", dims.use = 1:ncomp, max_iter = 50)
@@ -350,6 +351,7 @@ DotPlot(subset, features = degs_c8,
   scale_color_gradientn(colors = colorRampPalette(met.brewer("Johnson", direction = -1))(100))
 ```
 
+
 ```{r fig.width=6, fig.height=5}
 DimPlot(subset, group.by = c("SNN_harmony20_res.0.6"), 
         pt.size = 0.8, label = T, label.size = 12, cols = pal)
@@ -453,6 +455,7 @@ FeaturePlot(subset, features = c("Foxp3","Cxcr5","Il2ra","Il1r2",
                                     "Tigit","Sh2d1a","Pdcd1","Bcl6"), 
             order=T, pt.size = 0.5, ncol = 4)
 ```
+
 
 ```{r}
 subannot_df = c(

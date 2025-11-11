@@ -1074,6 +1074,7 @@ head(srat_filt@meta.data[mixed_res0.7, "cluster_annot", drop = FALSE])
 head(srat_filt@meta.data[mixed_res0.7, "final_annot", drop = FALSE])
 ```
 
+
 ```{r}
 srat_filt@meta.data
 ```
@@ -1154,6 +1155,7 @@ length(intersect(all_treg,treg))
 length(intersect(all_tfh, cluster3))
 length(cluster3)
 ```
+
 ```{r}
 length(intersect(all_treg, cluster5))
 length(cluster5)
